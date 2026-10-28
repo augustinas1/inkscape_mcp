@@ -79,6 +79,32 @@ If you installed via venv (option B), point `command` at the venv binary instead
 }
 ```
 
+## macOS
+
+```bash
+# Inkscape: the official app bundle in /Applications (auto-detected, nothing on $PATH needed)
+# dbus-daemon for the live bridge
+brew install dbus
+```
+
+The live bridge starts a private `dbus-daemon` on `unix:path=/tmp/inkscape-bus` and launches its
+own Inkscape under it on the first live operation (Homebrew's `dbus-launch` does not work on macOS,
+so don't use it). Overrides: `INKSCAPE_MCP_DBUS_ADDRESS` (bus address), `INKSCAPE_MCP_DBUS_DAEMON`
+(path to `dbus-daemon`, if it isn't in `/opt/homebrew/bin` or `/usr/local/bin`), `INKSCAPE_BIN`.
+
+Window-scope actions (dialogs, tool switching, zoom, `document-save`) do not exist on macOS, so
+they fail with an explanatory message and live edits are not auto-saved.
+
+From a source checkout without `uv`, a plain venv works too:
+
+```bash
+/opt/homebrew/bin/python3.12 -m venv .venv && .venv/bin/pip install -e .
+claude mcp add inkscape_mcp -s user -- "$PWD/.venv/bin/inkscape_mcp"
+```
+
+The live test tier launches its own Inkscape on macOS, so it is opt-in:
+`INKSCAPE_MCP_LIVE=1 .venv/bin/python -m pytest tests/live` (quit any Inkscape on the MCP bus first).
+
 ## Override the Inkscape binary
 
 To pin a non-default Inkscape build:

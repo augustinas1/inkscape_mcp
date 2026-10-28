@@ -18,7 +18,7 @@ Let your AI agent design, edit, and analyze vector graphics through Inkscape —
   <a href="https://modelcontextprotocol.io"><img src="https://img.shields.io/badge/MCP-1.x-1F6FEB?style=flat-square&logo=anthropic&logoColor=white" alt="MCP"></a>
   <a href="https://github.com/PrefectHQ/fastmcp"><img src="https://img.shields.io/badge/FastMCP-3.2-7c5cfc?style=flat-square" alt="FastMCP"></a>
   <a href="https://inkscape.org"><img src="https://img.shields.io/badge/Inkscape-1.4.4-000000?style=flat-square&logo=inkscape&logoColor=white" alt="Inkscape"></a>
-  <a href="#getting-started"><img src="https://img.shields.io/badge/platform-Linux%20%7C%20Windows-informational?style=flat-square" alt="Platform: Linux | Windows"></a>
+  <a href="#getting-started"><img src="https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-informational?style=flat-square" alt="Platform: Linux | Windows | macOS"></a>
   <a href="https://github.com/astral-sh/ruff"><img src="https://img.shields.io/badge/style-ruff-D7FF64?style=flat-square&logo=ruff&logoColor=black" alt="Ruff"></a>
   <a href="https://github.com/pre-commit/pre-commit"><img src="https://img.shields.io/badge/pre--commit-enabled-success?style=flat-square&logo=pre-commit&logoColor=white" alt="pre-commit"></a>
 </p>
@@ -88,6 +88,18 @@ pacman -S mingw-w64-x86_64-dbus   # provides dbus-daemon.exe; MCP auto-discovers
 `gdbus.exe` itself already ships with Inkscape, and the daemon's dependency DLLs are covered by Inkscape's, so MSYS2 is only the delivery vehicle for that one `dbus-daemon.exe`. If you already have one elsewhere, point `INKSCAPE_MCP_DBUS_DAEMON` at it (and `INKSCAPE_MCP_GDBUS` if `gdbus.exe` isn't found automatically).
 
 On Windows the live bridge **launches and manages its own Inkscape instance** — a hand-launched Inkscape isn't on the bus, so have the agent `open_file` a document to work on it. Tested on Inkscape 1.4.x.
+
+### macOS
+
+Install the official Inkscape app into `/Applications` (the server finds `/Applications/Inkscape.app/Contents/MacOS/inkscape` without `INKSCAPE_BIN`). The headless tools then work as on Linux. The **live** bridge additionally needs a `dbus-daemon`:
+
+```sh
+brew install dbus   # only dbus-daemon is used; nothing to enable or start
+```
+
+As on Windows, the live bridge **starts its own private session bus** (`unix:path=/tmp/inkscape-bus`, override with `INKSCAPE_MCP_DBUS_ADDRESS`) and **launches and owns its own Inkscape** on it — an Inkscape opened from the Dock or Finder isn't on that bus, so have the agent `open_file` a document to work on it. Bundled extensions install to `~/Library/Application Support/org.inkscape.Inkscape/config/inkscape/extensions/inkscape_mcp/`.
+
+Inkscape on macOS publishes no window-scope D-Bus actions, so **dialogs, tool switching, zoom/view toggles and `document-save` are unavailable** there — those calls fail with an explanatory message, and live edits are not auto-saved (save with Cmd+S). Everything else — app- and document-scope actions, `edit_xml`, `insert_svg`, `path_edit`, the `inspect_*` reads, `run_live`, `rasterize` — works. Tested on Inkscape 1.4.0.
 
 ## Configuration
 
