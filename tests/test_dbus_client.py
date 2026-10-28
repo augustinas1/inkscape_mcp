@@ -5,11 +5,12 @@ from __future__ import annotations
 import pytest
 
 from inkscape_mcp.dbus_client import InkscapeDBus
+from tests._helpers import live_bus
 
 
 @pytest.fixture(scope="module")
 def bus() -> InkscapeDBus:
-    b = InkscapeDBus()
+    b = live_bus()
     if not b.is_available():
         pytest.skip("Inkscape GUI not running — start it to exercise the live bridge")
     return b
@@ -33,7 +34,12 @@ def test_list_actions_window(bus: InkscapeDBus) -> None:
     if not windows:
         pytest.skip("no Inkscape windows open")
     actions = bus.list_actions(scope="window", window_id=windows[0])
-    assert "paste" in actions or "paste-in-place" in actions
+    if bus.window_scope_available:
+        assert "paste" in actions or "paste-in-place" in actions
+    else:
+        # macOS: "window" scope is the document object, which carries undo/redo but no
+        # window actions such as paste.
+        assert "undo" in actions
 
 
 def test_describe_select_by_id(bus: InkscapeDBus) -> None:

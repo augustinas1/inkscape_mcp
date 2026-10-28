@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from inkscape_mcp.dbus_client import InkscapeDBus
+from tests._helpers import live_bus
 from tests._helpers import payload as _payload
 
 
 @pytest.fixture(scope="module", autouse=True)
 def _bridge_required():
-    if not InkscapeDBus().is_available():
+    if not live_bus().is_available():
         pytest.skip(
             "Inkscape GUI not running — start it to exercise live bridge tests",
             allow_module_level=True,
@@ -31,22 +31,28 @@ async def test_list_actions(mcp):
     app_names = {a["name"] for a in p["data"]["app"]}
     window_names = {w["name"] for w in p["data"]["window"]}
     assert "select-by-id" in app_names
-    assert "paste-in-place" in window_names
+    if p["data"].get("window_scope_available", True):
+        assert "paste-in-place" in window_names
+    else:
+        # macOS: the "window" list is the document scope; paste-in-place is window-only.
+        assert "undo" in window_names
     # Annotated form: each entry has a description (may be empty).
     sample = p["data"]["app"][0]
     assert "name" in sample and "description" in sample
 
 
 async def test_list_actions_filter(mcp):
+    # layer-new is window-scope, which macOS doesn't publish; page-new is document-scope.
+    needle = "page-new" if live_bus().window_scope_available is False else "layer-new"
     res = await mcp.call_tool(
         "inkscape_live",
-        {"operation": "list_actions", "target": "layer-new"},
+        {"operation": "list_actions", "target": needle},
     )
     p = _payload(res)
     assert p["success"] is True
     # Filter is case-insensitive and matches name or description.
     names = {a["name"] for a in p["data"]["app"]} | {w["name"] for w in p["data"]["window"]}
-    assert any("layer-new" in n for n in names)
+    assert any(needle in n for n in names)
     # Filter must trim away other actions.
     assert "select-by-id" not in names
 

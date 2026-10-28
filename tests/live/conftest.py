@@ -23,6 +23,8 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
+import sys
 import time
 import warnings
 from pathlib import Path
@@ -30,6 +32,7 @@ from pathlib import Path
 import pytest
 
 from inkscape_mcp.dbus_client import InkscapeDBus
+from tests._helpers import live_bus
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 EXCHANGE = Path(os.path.expanduser("~/.cache/inkscape_mcp/exchange"))
@@ -48,6 +51,21 @@ _RESET_BODY = (
 
 @pytest.fixture(scope="session", autouse=True)
 def _bridge_required():
+    if sys.platform == "darwin":
+        # macOS: the tier launches (and later terminates) its own Inkscape on the test
+        # document, so it only needs the opt-in and an empty MCP bus.
+        if os.environ.get("INKSCAPE_MCP_LIVE") != "1":
+            pytest.skip(
+                "macOS live tier launches its own Inkscape — opt in with INKSCAPE_MCP_LIVE=1",
+                allow_module_level=True,
+            )
+        if live_bus().is_available():
+            pytest.skip(
+                "an Inkscape is already on the MCP bus; quit it first — on macOS the live tier "
+                "launches a dedicated instance on the test document",
+                allow_module_level=True,
+            )
+        return
     if not InkscapeDBus().is_available():
         pytest.skip(
             "Inkscape GUI not running — start it to exercise the live tier",
@@ -78,6 +96,10 @@ def live_session(tmp_path_factory):
     """Open one scratch document for the whole session; save and close it at the end."""
     path = tmp_path_factory.mktemp("live") / "live_doc.svg"
     shutil.copy(FIXTURES / "minimal.svg", path)
+
+    if sys.platform == "darwin":
+        yield from _macos_live_session(path)
+        return
 
     bus = InkscapeDBus()
     before = set(bus.list_windows())
@@ -115,6 +137,31 @@ def live_session(tmp_path_factory):
             )
     except Exception:  # noqa: S110 — teardown is best-effort; a stuck window must not fail the run
         pass
+
+
+def _macos_live_session(path: Path):
+    """Launch a dedicated Inkscape on `path` under the MCP bus; terminate it afterwards.
+
+    Inkscape on macOS publishes no window-scope actions, so the Linux teardown
+    (`document-save` + `document-close`) is impossible — and the auto-launched default
+    canvas would make a second document, turning every `window_id` ambiguous. Launching
+    straight onto the test document keeps the session to exactly one.
+    """
+    from inkscape_mcp import mac_bus_manager
+    from inkscape_mcp.inkscape_detector import MACOS_APP_BINARIES
+
+    exe = next((str(p) for p in MACOS_APP_BINARIES if p.is_file()), None)
+    if exe is None:
+        pytest.skip("Inkscape.app not found", allow_module_level=True)
+    address = mac_bus_manager.ensure_bus()
+    if not mac_bus_manager.ensure_inkscape(address, exe, open_path=str(path)):
+        pytest.fail("Inkscape did not register on the MCP bus in time")
+
+    yield path
+
+    # The test document is unsaved scratch; terminating the instance we launched (and
+    # only it — matched by the unique tmp path) avoids a "save changes?" dialog.
+    subprocess.run(["pkill", "-f", str(path)], check=False)
 
 
 @pytest.fixture
