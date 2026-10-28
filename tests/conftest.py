@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 import pytest_asyncio
 from fastmcp import Client
 
+from inkscape_mcp.inkscape_detector import MACOS_APP_BINARIES
 from inkscape_mcp.main import InkscapeMCPServer
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -19,6 +22,13 @@ FIXTURES = Path(__file__).parent / "fixtures"
 def pytest_configure(config: pytest.Config) -> None:
     """Refuse to run against Inkscape versions outside 1.4.x — the only supported line."""
     binary = shutil.which("inkscape")
+    if binary is None and sys.platform == "darwin":
+        # The macOS app bundle puts nothing on $PATH; expose it so tests that shell out
+        # to a bare `inkscape` find the same binary the server auto-detects.
+        bundled = next((p for p in MACOS_APP_BINARIES if p.is_file()), None)
+        if bundled is not None:
+            os.environ["PATH"] = f"{bundled.parent}{os.pathsep}{os.environ.get('PATH', '')}"
+            binary = shutil.which("inkscape")
     if binary is None:
         pytest.exit("Inkscape not found on $PATH. See docs/INSTALL.md.", returncode=2)
     out = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=10)

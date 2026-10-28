@@ -76,18 +76,18 @@ def test_socket_path(address, expected):
 
 
 def test_ensure_bus_reuses_reachable_daemon(monkeypatch):
-    monkeypatch.setattr(mac_bus_manager, "_bus_reachable", lambda addr: True)
+    monkeypatch.setattr(mac_bus_manager, "_probe_bus", lambda addr: None)
     monkeypatch.setattr(mac_bus_manager.subprocess, "run", MagicMock(side_effect=AssertionError("spawned")))
     assert mac_bus_manager.ensure_bus() == "unix:path=/tmp/inkscape-bus"
 
 
-def test_ensure_bus_starts_daemon_and_clears_stale_socket(monkeypatch, tmp_path):
+def test_ensure_bus_starts_daemon_and_clears_refused_socket(monkeypatch, tmp_path):
     sock = tmp_path / "bus"
     sock.write_text("stale")
     monkeypatch.setenv("INKSCAPE_MCP_DBUS_ADDRESS", f"unix:path={sock}")
     monkeypatch.setattr(mac_bus_manager, "find_dbus_daemon", lambda: "/opt/homebrew/bin/dbus-daemon")
-    reachable = iter([False, True])
-    monkeypatch.setattr(mac_bus_manager, "_bus_reachable", lambda addr: next(reachable))
+    probes = iter(["refused", None])
+    monkeypatch.setattr(mac_bus_manager, "_probe_bus", lambda addr: next(probes))
     run = MagicMock(return_value=MagicMock(returncode=0, stdout="", stderr=""))
     monkeypatch.setattr(mac_bus_manager.subprocess, "run", run)
 
@@ -97,8 +97,35 @@ def test_ensure_bus_starts_daemon_and_clears_stale_socket(monkeypatch, tmp_path)
     assert argv == ["/opt/homebrew/bin/dbus-daemon", "--session", f"--address=unix:path={sock}", "--fork"]
 
 
+def test_ensure_bus_never_replaces_a_socket_that_may_be_live(monkeypatch, tmp_path):
+    """A probe that fails for any reason other than 'refused' must not orphan the daemon."""
+    sock = tmp_path / "bus"
+    sock.write_text("live")
+    monkeypatch.setenv("INKSCAPE_MCP_DBUS_ADDRESS", f"unix:path={sock}")
+    monkeypatch.setattr(mac_bus_manager, "_probe_bus", lambda addr: "TimeoutError: timed out")
+    monkeypatch.setattr(mac_bus_manager.subprocess, "run", MagicMock(side_effect=AssertionError("spawned")))
+
+    with pytest.raises(mac_bus_manager.BusError, match="not replacing it"):
+        mac_bus_manager.ensure_bus()
+    assert sock.exists()
+
+
+def test_probe_distinguishes_absent_and_refused():
+    import socket
+    import tempfile
+
+    # Short dir: macOS caps AF_UNIX paths at 104 bytes, which pytest's tmp_path exceeds.
+    with tempfile.TemporaryDirectory(dir="/tmp") as d:
+        path = Path(d) / "s"
+        assert mac_bus_manager._probe_bus(f"unix:path={path}") == "absent"
+        listener = socket.socket(socket.AF_UNIX)
+        listener.bind(str(path))
+        listener.close()  # socket file remains, nobody listening
+        assert mac_bus_manager._probe_bus(f"unix:path={path}") == "refused"
+
+
 def test_ensure_bus_explains_missing_daemon(monkeypatch):
-    monkeypatch.setattr(mac_bus_manager, "_bus_reachable", lambda addr: False)
+    monkeypatch.setattr(mac_bus_manager, "_probe_bus", lambda addr: "absent")
     monkeypatch.setattr(mac_bus_manager, "find_dbus_daemon", lambda: None)
     with pytest.raises(mac_bus_manager.BusError, match="brew install dbus"):
         mac_bus_manager.ensure_bus()

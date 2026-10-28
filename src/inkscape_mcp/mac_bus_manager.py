@@ -86,38 +86,56 @@ def find_dbus_daemon() -> str | None:
 # ---- bus lifecycle -----------------------------------------------------------------
 
 
-def _bus_reachable(address: str) -> bool:
-    """True if a dbus-daemon is answering at ``address`` (independent of Inkscape)."""
+def _probe_bus(address: str) -> str | None:
+    """Return None if a dbus-daemon is answering at ``address``, else why not.
+
+    The reason distinguishes "nothing is listening" (``"absent"`` / ``"refused"``, safe
+    to start a fresh daemon) from every other failure, where a daemon may well be alive.
+    """
     try:
         conn = open_macos_connection(address)
-    except (OSError, ValueError, AuthenticationError):
-        return False
+    except FileNotFoundError:
+        return "absent"
+    except ConnectionRefusedError:
+        return "refused"
+    except (OSError, ValueError, AuthenticationError) as exc:
+        return f"{type(exc).__name__}: {exc}"
     try:
         addr = DBusAddress("/org/freedesktop/DBus", bus_name="org.freedesktop.DBus", interface="org.freedesktop.DBus")
         conn.send_and_get_reply(new_method_call(addr, "GetId"), timeout=5)
-        return True
-    except Exception:
-        return False
+        return None
+    except Exception as exc:
+        return f"{type(exc).__name__}: {exc}"
     finally:
         conn.close()
+
+
+def _bus_reachable(address: str) -> bool:
+    """True if a dbus-daemon is answering at ``address`` (independent of Inkscape)."""
+    return _probe_bus(address) is None
 
 
 def ensure_bus() -> str:
     """Return a reachable session-bus address, reusing or starting a dbus-daemon.
 
     The address is fixed, so a daemon left running by an earlier MCP server is simply
-    reused; a dead daemon's leftover socket file is removed so a new one can bind.
+    reused. The socket file is removed only when connecting to it is *refused* — proof
+    that its daemon is dead. Any other probe failure raises instead: deleting the socket
+    of a live daemon would orphan it, and the Inkscape on it, for good.
     """
     address = bus_address()
-    if _bus_reachable(address):
+    reason = _probe_bus(address)
+    if reason is None:
         return address
+    if reason not in ("absent", "refused"):
+        raise BusError(f"a dbus-daemon socket exists at {address} but did not answer ({reason}); not replacing it")
 
     daemon = find_dbus_daemon()
     if not daemon:
         raise BusError("dbus-daemon not found. Install it ('brew install dbus') or set INKSCAPE_MCP_DBUS_DAEMON.")
 
     sock = _socket_path(address)
-    if sock is not None and sock.exists():
+    if reason == "refused" and sock is not None and sock.exists():
         sock.unlink()
 
     # --fork daemonises, so the bus outlives this server; the explicit --address
