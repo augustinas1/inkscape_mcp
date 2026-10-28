@@ -73,6 +73,21 @@ Some export and trace operations need extra packages:
 - `inkscape_system(operation="diagnostics")` reports `bridge.live` and `bridge.needs_restart`. If `needs_restart` is `true`, the server just installed or updated its inkex plugins — close and reopen Inkscape so it picks them up.
 - The MCP server auto-installs plugins to `~/.config/inkscape/extensions/inkscape_mcp/` on first boot. Inkscape only scans the extensions dir at startup.
 
+### macOS: the bridge is unavailable, or edits land in a blank `canvas.svg`
+
+- The server only talks to the Inkscape it launched on its private bus
+  (`unix:path=/tmp/inkscape-bus`). An Inkscape opened from the Dock is not reachable —
+  have the agent `open_file` your document instead.
+- `dbus-daemon` must be installed (`brew install dbus`); check with `pgrep -fl dbus-daemon`
+  that exactly one is listening on that address.
+- Plugins install to `~/Library/Application Support/org.inkscape.Inkscape/config/inkscape/extensions/inkscape_mcp/`.
+- If Inkscape quits by itself, the next live call launches a fresh one on the blank default
+  canvas. Look for `inkscape-*.ips` in `~/Library/Logs/DiagnosticReports`. On Inkscape 1.4.0 a
+  docked **Export** dialog crashes Inkscape (`SPItem::documentVisualBounds` from
+  `ExportPreview`) when an extension — which every bridge edit and inspect is — runs just
+  after startup. Close the Export tab in the docked panel, quit, and relaunch; or upgrade
+  Inkscape.
+
 ### Clipboard insert (`insert_svg`) fails
 
 - X11: `xclip` must be on PATH.
