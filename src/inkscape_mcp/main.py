@@ -160,6 +160,19 @@ This is a shared canvas, so collaborate rather than guess:
    `insert_svg` is unavailable — insert content with `edit_xml` `append` instead.
 """
 
+MACOS_INSTRUCTIONS = """
+
+## macOS
+
+The server launches and owns its own Inkscape on a private D-Bus session bus; an
+Inkscape the user opened from the Dock is not reachable, so `open_file` the document to
+work on it there. Inkscape on macOS publishes no window-scope D-Bus actions: dialogs
+(`dialog-open`), tool switching (`tool-switch`), zoom/view toggles and `document-save`
+are unavailable. Instead of opening a dialog, tell the user where it is; edits are not
+auto-saved, so ask them to save (Cmd+S). App- and document-scope actions, `edit_xml`,
+`insert_svg`, the `inspect_*` reads, `run_live` and `rasterize` all work.
+"""
+
 
 class InkscapeMCPServer:
     """Main server class for Inkscape MCP integration."""
@@ -174,7 +187,8 @@ class InkscapeMCPServer:
         # and layers the INKSCAPE_* env overrides on top. Short-circuiting to a bare
         # InkscapeConfig() when no --config was passed made both permanently dead.
         self.config = load_config(config_path)
-        self.mcp = FastMCP("Inkscape MCP Server", instructions=SERVER_INSTRUCTIONS)
+        instructions = SERVER_INSTRUCTIONS + (MACOS_INSTRUCTIONS if sys.platform == "darwin" else "")
+        self.mcp = FastMCP("Inkscape MCP Server", instructions=instructions)
         self.tools: dict[str, Any] = {}
         self.logger = logging.getLogger(__name__)
         self.cli_wrapper: Any | None = None

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import os
+import socket
 import xml.etree.ElementTree as ET
 from typing import Any
 
 from jeepney import DBusAddress, MessageType, new_method_call
+from jeepney.auth import BEGIN, Authenticator
+from jeepney.bus import get_bus
 from jeepney.io.blocking import DBusConnection, open_dbus_connection
 from jeepney.wrappers import DBusErrorResponse
 
@@ -14,6 +17,7 @@ from jeepney.wrappers import DBusErrorResponse
 BUS_NAME = "org.inkscape.Inkscape"
 APP_PATH = "/org/inkscape/Inkscape"
 WINDOW_PATH_PREFIX = "/org/inkscape/Inkscape/window"
+DOCUMENT_PATH_PREFIX = "/org/inkscape/Inkscape/document"
 
 _FALSEY = frozenset({"", "0", "false", "no", "off", "none"})
 
@@ -35,12 +39,25 @@ def coerce_bool(value: Any) -> bool:
 class InkscapeDBus:
     """Blocking jeepney bridge to a running Inkscape 1.4.x GUI on the session bus."""
 
-    def __init__(self) -> None:
+    # Where "window"-scope actions live and whether the platform publishes real window
+    # actions (dialogs, tools, zoom, document-save) at all. Overridden on macOS.
+    window_path_prefix = WINDOW_PATH_PREFIX
+    window_scope_available = True
+
+    def __init__(self, bus_address: str = "SESSION") -> None:
+        self._bus_address = bus_address
         self._conn: DBusConnection | None = None
+
+    @property
+    def bus_address(self) -> str:
+        return self._bus_address
+
+    def _open(self) -> DBusConnection:
+        return open_dbus_connection(bus=self._bus_address)
 
     def _connect(self) -> DBusConnection:
         if self._conn is None:
-            self._conn = open_dbus_connection(bus="SESSION")
+            self._conn = self._open()
         return self._conn
 
     def _close(self) -> None:
@@ -68,7 +85,7 @@ class InkscapeDBus:
         if scope == "app":
             return APP_PATH
         if scope == "window":
-            return f"{WINDOW_PATH_PREFIX}/{window_id}"
+            return f"{self.window_path_prefix}/{window_id}"
         raise ValueError(f"scope must be 'app' or 'window', got {scope!r}")
 
     def is_available(self) -> bool:
@@ -159,7 +176,7 @@ class InkscapeDBus:
 
     def list_windows(self) -> list[int]:
         addr = DBusAddress(
-            object_path=WINDOW_PATH_PREFIX,
+            object_path=self.window_path_prefix,
             bus_name=BUS_NAME,
             interface="org.freedesktop.DBus.Introspectable",
         )
@@ -173,3 +190,47 @@ class InkscapeDBus:
             if name and name.isdigit():
                 ids.append(int(name))
         return sorted(ids)
+
+
+class MacInkscapeDBus(InkscapeDBus):
+    """jeepney bridge to an Inkscape launched under the MCP's private macOS bus.
+
+    Inkscape on macOS publishes app actions at ``/org/inkscape/Inkscape`` and document
+    actions at ``.../document/N``, but no ``.../window/N`` objects at all — so, as on
+    Windows, the "window" scope addresses the document object, and true window actions
+    (dialogs, tool switching, zoom, document-save) are unreachable.
+    """
+
+    window_path_prefix = DOCUMENT_PATH_PREFIX
+    window_scope_available = False
+
+    def _open(self) -> DBusConnection:
+        return open_macos_connection(self._bus_address)
+
+
+def open_macos_connection(address: str, timeout: float = 2.0) -> DBusConnection:
+    """Open a jeepney connection to a unix-socket bus on macOS.
+
+    jeepney's own ``open_dbus_connection`` sees ``socket.SCM_CREDS`` and sends a
+    BSD-style credentials message, which macOS rejects with EINVAL. The macOS
+    dbus-daemon reads peer credentials off the socket itself, so the plain NUL byte
+    that jeepney sends on Linux is all the EXTERNAL handshake needs.
+    """
+    sock = socket.socket(family=socket.AF_UNIX)
+    try:
+        sock.settimeout(timeout)
+        sock.connect(get_bus(address))
+        sock.send(b"\0")
+        authr = Authenticator(enable_fds=False, inc_null_byte=False)
+        for req_data in authr:
+            sock.sendall(req_data)
+            data = sock.recv(1024)
+            if not data:
+                raise ConnectionResetError("bus closed the connection during authentication")
+            authr.feed(data)
+        sock.sendall(BEGIN)
+    except BaseException:
+        sock.close()
+        raise
+    sock.settimeout(None)
+    return DBusConnection(sock)

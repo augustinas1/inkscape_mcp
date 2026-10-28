@@ -13,10 +13,11 @@ from typing import Any
 from lxml import etree
 from pydantic import BaseModel
 
-from .. import bus_manager
+from .. import bus_manager, mac_bus_manager
 from ..clipboard import SVG_NS
-from ..dbus_client import InkscapeDBus
+from ..dbus_client import InkscapeDBus, MacInkscapeDBus
 from ..extension_bridge import invoke_extension
+from ..inkscape_detector import MACOS_APP_BINARIES
 from ..win_dbus_client import WinInkscapeDBus
 
 
@@ -88,6 +89,17 @@ _READ_ONLY_PREFIXES: tuple[str, ...] = (
 )
 
 
+MACOS_NO_WINDOW_SCOPE = (
+    "Inkscape on macOS publishes no window-scope D-Bus actions (no /org/inkscape/Inkscape/window/N "
+    "objects), so window actions — dialogs, tool switching, zoom, canvas/view toggles, "
+    "document-save — are unavailable on macOS"
+)
+
+
+def _has_window_scope(bus: Any) -> bool:
+    return getattr(bus, "window_scope_available", True)
+
+
 def _action_mutates_document(action: str) -> bool:
     """True if firing `action` should be followed by document-save."""
     if action in _READ_ONLY_ACTIONS:
@@ -119,6 +131,16 @@ def _save_active_document(bus: InkscapeDBus, window_id: int) -> tuple[bool, str]
             "matched to a window for saving — the edit is applied in Inkscape but NOT written "
             "to disk. Save in the GUI, or work with a single document open."
         )
+    if not _has_window_scope(bus):
+        try:
+            reachable = "document-save" in bus.list_actions("window", window_id)
+        except Exception:
+            reachable = False
+        if not reachable:
+            return False, (
+                f"auto-save skipped: {MACOS_NO_WINDOW_SCOPE}. The edit is applied in Inkscape "
+                "but NOT written to disk — save in the GUI (Cmd+S)."
+            )
     try:
         bus.activate("document-save", scope="window", window_id=window_id)
         return True, ""
@@ -164,7 +186,10 @@ def _resolve_window_id(bus: InkscapeDBus, requested: int) -> int:
 
 def _resolve_inkscape_exe(config: Any) -> str:
     exe = getattr(config, "inkscape_executable", None) if config is not None else None
-    exe = exe or os.environ.get("INKS_INKSCAPE_BIN") or os.environ.get("INKSCAPE_BIN") or "inkscape"
+    exe = exe or os.environ.get("INKS_INKSCAPE_BIN") or os.environ.get("INKSCAPE_BIN")
+    if not exe and mac_bus_manager.is_macos():
+        exe = next((str(p) for p in MACOS_APP_BINARIES if p.is_file()), None)
+    exe = exe or "inkscape"
     # Inkscape's detector may return inkscape.COM (console wrapper); the GUI binary
     # inkscape.exe sits beside it and launches without spawning a console window.
     if exe.lower().endswith("inkscape.com"):
@@ -179,8 +204,10 @@ def _get_bus(config: Any = None) -> Any:
 
     Windows has no autostarted D-Bus session bus and jeepney can't speak the TCP bus, so
     we use a ``gdbus.exe``-backed client bound to a managed session bus (see
-    ``bus_manager``). Linux/macOS keep the jeepney client. The Windows client is cheap to
-    build and bound to a possibly-changing bus address, so it is not cached.
+    ``bus_manager``). macOS likewise has no session bus, so it gets a jeepney client bound
+    to the MCP's private unix-socket bus (see ``mac_bus_manager``). Linux keeps the plain
+    session-bus jeepney client. The Windows client is cheap to build and bound to a
+    possibly-changing bus address, so it is not cached.
     """
     global _BUS
     if bus_manager.is_windows():
@@ -190,14 +217,21 @@ def _get_bus(config: Any = None) -> Any:
             raise RuntimeError("gdbus.exe not found (expected next to inkscape.exe or on PATH)")
         address = bus_manager.ensure_bus(gdbus)
         return WinInkscapeDBus(gdbus, address)
+    if mac_bus_manager.is_macos():
+        address = mac_bus_manager.ensure_bus()
+        if not isinstance(_BUS, MacInkscapeDBus) or _BUS.bus_address != address:
+            _BUS = MacInkscapeDBus(address)
+        return _BUS
     if _BUS is None:
         _BUS = InkscapeDBus()
     return _BUS
 
 
 def _auto_launch_inkscape(config: Any) -> bool:
-    """Windows auto-manage: ensure a bus + a running Inkscape under it. Returns ready."""
+    """Windows/macOS auto-manage: ensure a bus + a running Inkscape under it. Returns ready."""
     inkscape_exe = _resolve_inkscape_exe(config)
+    if mac_bus_manager.is_macos():
+        return mac_bus_manager.ensure_inkscape(mac_bus_manager.ensure_bus(), inkscape_exe)
     gdbus = bus_manager.find_gdbus(inkscape_exe)
     if not gdbus:
         raise RuntimeError("gdbus.exe not found (expected next to inkscape.exe or on PATH)")
@@ -317,26 +351,39 @@ async def _export_document_async(bus: InkscapeDBus, scratch: Path) -> None:
 
 def _op_ping(bus: InkscapeDBus, operation: str, start: float) -> dict[str, Any]:
     if not bus.is_available():
+        message = "Inkscape D-Bus bridge not reachable (is the GUI running?)"
+        if not _has_window_scope(bus):
+            message = (
+                "Inkscape D-Bus bridge not reachable. On macOS the server launches and owns its "
+                "own Inkscape on the first non-ping live operation; an Inkscape you started "
+                "yourself is not on the MCP's bus."
+            )
         return _result(
             operation,
             False,
-            "Inkscape D-Bus bridge not reachable (is the GUI running?)",
+            message,
             data={"ok": False, "windows": [], "app_actions": 0, "window_actions": 0},
             start=start,
         )
     windows = bus.list_windows()
     app_actions = bus.list_actions("app")
     window_actions = bus.list_actions("window", windows[0]) if windows else []
+    data: dict[str, Any] = {
+        "ok": True,
+        "windows": windows,
+        "app_actions": len(app_actions),
+        "window_actions": len(window_actions),
+    }
+    message = f"Inkscape bridge live ({len(windows)} window(s))"
+    if not _has_window_scope(bus):
+        # "windows" are document objects here and "window_actions" are document-scope.
+        data["window_scope_available"] = False
+        message += f"; {MACOS_NO_WINDOW_SCOPE}"
     return _result(
         operation,
         True,
-        f"Inkscape bridge live ({len(windows)} window(s))",
-        data={
-            "ok": True,
-            "windows": windows,
-            "app_actions": len(app_actions),
-            "window_actions": len(window_actions),
-        },
+        message,
+        data=data,
         start=start,
     )
 
@@ -667,6 +714,18 @@ def _op_apply_action(
         scope = "app"
     elif target in window_actions:
         scope = "window"
+    elif not _has_window_scope(bus):
+        return _result(
+            operation,
+            False,
+            (
+                f"action {target!r} is not registered on app or document scope. "
+                f"{MACOS_NO_WINDOW_SCOPE}; if {target!r} is one of those, use it in the GUI instead."
+            ),
+            data={"action": target, "window_scope_available": False},
+            error="unavailable on macOS",
+            start=start,
+        )
     else:
         return _result(
             operation,
@@ -773,13 +832,11 @@ async def _op_list_actions(
     msg = f"{len(app)} app + {len(window)} window actions"
     if target:
         msg += f" matching {target!r}"
-    return _result(
-        operation,
-        True,
-        msg,
-        data={"app": app, "window": window, "filter": target},
-        start=start,
-    )
+    data: dict[str, Any] = {"app": app, "window": window, "filter": target}
+    if not _has_window_scope(bus):
+        msg = msg.replace("window actions", "document actions") + f" ({MACOS_NO_WINDOW_SCOPE})"
+        data["window_scope_available"] = False
+    return _result(operation, True, msg, data=data, start=start)
 
 
 def _op_open_file(bus: InkscapeDBus, operation: str, target: str, start: float) -> dict[str, Any]:
@@ -1350,8 +1407,8 @@ async def inkscape_live(
         except Exception as exc:
             return _result(operation, False, f"ping failed: {exc}", error=str(exc), start=start)
 
-    # Auto-manage (Windows): if the bridge isn't live yet, start the bus + Inkscape.
-    if bus_manager.is_windows() and not bus.is_available():
+    # Auto-manage (Windows/macOS): if the bridge isn't live yet, start the bus + Inkscape.
+    if (bus_manager.is_windows() or mac_bus_manager.is_macos()) and not bus.is_available():
         try:
             _auto_launch_inkscape(config)
         except Exception as exc:

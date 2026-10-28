@@ -361,7 +361,13 @@ async def inkscape_system(
                 # inline can wedge the whole event loop on a stalled Inkscape. Run the probe
                 # in a worker thread and give up after a beat.
                 def _probe() -> dict[str, Any]:
-                    bus = InkscapeDBus()
+                    from .. import mac_bus_manager
+                    from ..dbus_client import MacInkscapeDBus
+
+                    # macOS: probe the MCP's private bus, without starting it.
+                    bus = (
+                        MacInkscapeDBus(mac_bus_manager.bus_address()) if mac_bus_manager.is_macos() else InkscapeDBus()
+                    )
                     if bus.is_available():
                         return {"live": True, "needs_restart": needs_inkscape_restart(bus)}
                     return {"live": False}
