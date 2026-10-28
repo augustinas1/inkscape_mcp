@@ -31,11 +31,22 @@ from lxml import etree
 
 from .live import _get_bus, _result
 
-_SYSTEM_EXT_DIRS = (
-    Path("/usr/share/inkscape/extensions"),
-    Path("/usr/local/share/inkscape/extensions"),
-)
-_USER_EXT_DIR = Path(os.path.expanduser("~/.config/inkscape/extensions"))
+if sys.platform == "darwin":
+    # The macOS app bundle carries its own share/ tree and keeps user config under
+    # Application Support rather than ~/.config.
+    from ..extension_bridge import MACOS_USER_CONFIG_DIR
+    from ..inkscape_detector import MACOS_APP_BINARIES
+
+    _SYSTEM_EXT_DIRS: tuple[Path, ...] = tuple(
+        b.parent.parent / "Resources" / "share" / "inkscape" / "extensions" for b in MACOS_APP_BINARIES
+    )
+    _USER_EXT_DIR = MACOS_USER_CONFIG_DIR / "extensions"
+else:
+    _SYSTEM_EXT_DIRS = (
+        Path("/usr/share/inkscape/extensions"),
+        Path("/usr/local/share/inkscape/extensions"),
+    )
+    _USER_EXT_DIR = Path(os.path.expanduser("~/.config/inkscape/extensions"))
 
 # How long to wait for an extension subprocess. Some (LaTeX renderers, raster
 # filters) are genuinely slow; cap generously.
@@ -152,8 +163,7 @@ def _discover(refresh: bool = False) -> dict[str, _Extension]:
 
     found: dict[str, _Extension] = {}
     for source_label, ext_dir in (
-        ("system", _SYSTEM_EXT_DIRS[0]),
-        ("system", _SYSTEM_EXT_DIRS[1]),
+        *(("system", d) for d in _SYSTEM_EXT_DIRS),
         ("user", _USER_EXT_DIR),
     ):
         if not ext_dir.is_dir():

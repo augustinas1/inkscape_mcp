@@ -47,17 +47,24 @@ EXCHANGE_DIR = Path(os.path.expanduser("~/.cache/inkscape_mcp/exchange"))
 # practice and removes a whole class of cross-talk between concurrent tool calls.
 BRIDGE_LOCK = asyncio.Lock()
 
+# Inkscape's per-user config root when run from the macOS app bundle.
+MACOS_USER_CONFIG_DIR = Path(os.path.expanduser("~/Library/Application Support/org.inkscape.Inkscape/config/inkscape"))
+
 
 def _user_extensions_dir() -> Path:
     """Inkscape's per-user extensions dir, platform-aware.
 
-    Windows keeps preferences/extensions under ``%APPDATA%\\inkscape``; Linux/macOS use
-    the XDG ``~/.config/inkscape`` location.
+    Windows keeps preferences/extensions under ``%APPDATA%\\inkscape``; the macOS app
+    bundle under ``~/Library/Application Support/org.inkscape.Inkscape/config/inkscape``;
+    Linux uses the XDG ``~/.config/inkscape`` location.
     """
     if sys.platform == "win32":
         appdata = os.environ.get("APPDATA") or os.path.expanduser("~/AppData/Roaming")
         return Path(appdata) / "inkscape" / "extensions" / "inkscape_mcp"
-    return Path(os.path.expanduser("~/.config/inkscape/extensions/inkscape_mcp"))
+    elif sys.platform == "darwin":
+        return MACOS_USER_CONFIG_DIR / "extensions" / "inkscape_mcp"
+    else:
+        return Path(os.path.expanduser("~/.config/inkscape/extensions/inkscape_mcp"))
 
 
 INSTALL_DIR = _user_extensions_dir()
