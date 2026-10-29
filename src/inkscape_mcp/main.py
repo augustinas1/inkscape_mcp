@@ -671,10 +671,15 @@ class InkscapeMCPServer:
             document is open and the target is therefore ambiguous. Check
             `active_document` before any destructive edit; auto-save writes to disk.
 
+            `changes` reports what the user edited in Inkscape since the last check (added,
+            deleted, moved, restyled elements by id) and re-baselines; call it before
+            rebuilding or replacing anything the user may have touched. `payload`
+            `{"mark": false}` peeks without re-baselining.
+
             Operations: ping, get_document_xml, get_selection, set_selection, insert_svg,
-            delete_selected, apply_action, list_actions, open_file, save_snapshot, edit_xml,
-            path_edit, inspect_selection/layers/defs/view/pages/element, execute_inkex,
-            rasterize.
+            delete_selected, apply_action, list_actions, open_file, save_snapshot, changes,
+            edit_xml, path_edit, inspect_selection/layers/defs/view/pages/element,
+            execute_inkex, rasterize.
             """
             return await inkscape_live_tool(
                 operation=operation,

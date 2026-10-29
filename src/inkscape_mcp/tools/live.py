@@ -1367,6 +1367,44 @@ async def _op_path_edit(
     )
 
 
+async def _op_changes(bus: InkscapeDBus, operation: str, payload: str, start: float) -> dict[str, Any]:
+    """Report what changed in the live document since the last check, then re-baseline.
+
+    Fingerprints an export snapshot (no undo entry, unlike the inspect extensions) and
+    diffs it against the baseline shared with the Claude Code hooks (see change_tracker).
+    ``payload`` may be ``{"mark": false}`` to peek without moving the baseline.
+    """
+    from .. import change_tracker
+
+    mark = True
+    if payload:
+        try:
+            mark = bool(json.loads(payload).get("mark", True))
+        except (ValueError, AttributeError) as exc:
+            return _result(operation, False, f"payload must be JSON like {{'mark': false}}: {exc}", start=start)
+
+    _SCRATCH_DIR.mkdir(parents=True, exist_ok=True)
+    scratch = _SCRATCH_DIR / f"track-{uuid.uuid4().hex}.svg"
+    try:
+        await _export_document_async(bus, scratch)
+        docname, elements = change_tracker.fingerprint(scratch.read_bytes())
+    finally:
+        scratch.unlink(missing_ok=True)
+    result = change_tracker.compare(docname, elements, mark=mark)
+
+    if result.get("doc_switched_from") is not None:
+        message = f"active document is now {docname!r} (baseline was {result['doc_switched_from']!r})"
+    elif not result["had_baseline"]:
+        message = f"no earlier baseline; {'recorded one' if mark else 'nothing to compare'} for {docname!r}"
+    elif result["changes"]:
+        message = f"{len(result['changes'])} change(s) to {docname!r} since the last check:\n" + "\n".join(
+            result["changes"]
+        )
+    else:
+        message = f"no changes to {docname!r} since the last check"
+    return _result(operation, True, message, data=result, start=start)
+
+
 async def _op_save_snapshot(bus: InkscapeDBus, operation: str, start: float) -> dict[str, Any]:
     scratch = _scratch_path()
     await _export_document_async(bus, scratch)
@@ -1509,6 +1547,8 @@ async def inkscape_live(
             return _op_open_file(bus, operation, target, start)
         if operation == "save_snapshot":
             return await _op_save_snapshot(bus, operation, start)
+        if operation == "changes":
+            return await _op_changes(bus, operation, payload, start)
         if operation == "edit_xml":
             return await _op_edit_xml(bus, operation, target, payload, window_id, start)
         if operation == "path_edit":

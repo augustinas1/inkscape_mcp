@@ -111,6 +111,7 @@ InkscapeLiveOperation = Literal[
     "list_actions",
     "open_file",
     "save_snapshot",
+    "changes",
     "edit_xml",
     "path_edit",
     "inspect_selection",
