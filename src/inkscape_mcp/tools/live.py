@@ -1188,6 +1188,9 @@ async def _op_edit_xml(
       remove → no args
       set_attr → require "name", "value"
       set_text → require "text"
+
+    Batch: {"ops": [{"xpath": ..., "action": ..., ...}, ...]} applies every op as ONE
+    undoable step, all-or-nothing; an op without "xpath" uses `target`.
     """
     valid_actions = {
         "append",
@@ -1199,8 +1202,6 @@ async def _op_edit_xml(
         "replace",
     }
 
-    if not target_xpath:
-        return _result(operation, False, "target (xpath) is required", error="missing target", start=start)
     try:
         payload = json.loads(payload_json) if payload_json else {}
     except json.JSONDecodeError as exc:
@@ -1213,6 +1214,11 @@ async def _op_edit_xml(
             error="bad payload",
             start=start,
         )
+
+    if "ops" in payload:
+        return await _op_edit_xml_batch(bus, operation, target_xpath, payload["ops"], window_id, valid_actions, start)
+    if not target_xpath:
+        return _result(operation, False, "target (xpath) is required", error="missing target", start=start)
 
     action = payload.get("action")
     if action not in valid_actions:
@@ -1275,6 +1281,72 @@ async def _op_edit_xml(
             "save_skipped_reason": save_note,
             **{k: v for k, v in result.data.items() if k != "affected"},
         },
+        start=start,
+    )
+
+
+async def _op_edit_xml_batch(
+    bus: InkscapeDBus,
+    operation: str,
+    default_xpath: str,
+    ops: Any,
+    window_id: int,
+    valid_actions: set[str],
+    start: float,
+) -> dict[str, Any]:
+    """Several edit_xml ops in one extension run: one undo entry, all-or-nothing."""
+    if not isinstance(ops, list) or not ops:
+        return _result(operation, False, "'ops' must be a non-empty list", error="bad payload", start=start)
+    specs: list[dict[str, Any]] = []
+    for i, op in enumerate(ops):
+        if not isinstance(op, dict):
+            return _result(operation, False, f"op {i} must be an object", error="bad payload", start=start)
+        xpath = op.get("xpath") or default_xpath
+        if not xpath:
+            return _result(
+                operation, False, f"op {i} has no xpath (and no target)", error="missing target", start=start
+            )
+        if op.get("action") not in valid_actions:
+            return _result(
+                operation,
+                False,
+                f"op {i}: unknown action {op.get('action')!r}; valid: {sorted(valid_actions)}",
+                error="bad action",
+                start=start,
+            )
+        specs.append(
+            {"xpath": xpath, **{k: v for k, v in op.items() if k in ("action", "xml", "name", "value", "text")}}
+        )
+
+    result = await invoke_extension(bus, _EDIT_XML_EXTENSION, {"ops": specs}, timeout_s=30.0)
+    if not result.success:
+        message = result.error or "edit_xml extension failed"
+        if result.stderr:
+            message = f"{message}\nstderr:\n{result.stderr}"
+        return _result(
+            operation,
+            False,
+            message,
+            data={"action": "batch", "stderr": result.stderr},
+            error=result.error,
+            start=start,
+        )
+    if result.data.get("ok") is False:
+        return _result(
+            operation,
+            False,
+            f"batch not applied (nothing changed): {result.data.get('error', 'edit_xml failed')}",
+            data={"action": "batch", **result.data},
+            error=result.data.get("error", ""),
+            start=start,
+        )
+
+    saved, save_note = _save_active_document(bus, window_id)
+    return _result(
+        operation,
+        True,
+        f"edit_xml batch: {len(specs)} op(s), {result.data.get('affected', 0)} node(s), one undo step",
+        data={"action": "batch", "saved": saved, "save_skipped_reason": save_note, **result.data},
         start=start,
     )
 

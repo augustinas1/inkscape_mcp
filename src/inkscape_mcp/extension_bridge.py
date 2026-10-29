@@ -76,7 +76,9 @@ VERSION_FILE = INSTALL_DIR / "VERSION"
 # 11: computed_style resolves the CSS cascade in the right order (inline style="" beats
 #     the presentation attribute — it used to report the losing declaration), and every
 #     plugin result now names the document it ran against via `active_document`.
-PLUGINS_VERSION = "11"
+# 12: mcp_edit_xml accepts {"ops": [...]} — a batch applied as one undo step, rehearsed on
+#     a copy first so it is all-or-nothing.
+PLUGINS_VERSION = "12"
 
 # Used to detect whether a fresh install has been picked up by a running Inkscape.
 ECHO_ACTION = "org.inkscape.mcp.echo.noprefs"

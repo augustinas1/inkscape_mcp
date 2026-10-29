@@ -16,6 +16,14 @@ Reads ``~/.cache/inkscape_mcp/exchange/input.json`` describing the edit:
         "text":   "new text"                   # set_text
     }
 
+or a batch, applied as ONE undoable step and all-or-nothing:
+
+    {"ops": [{"xpath": ..., "action": ..., ...}, ...]}
+
+The batch is first run against a copy of the document; only if every op succeeds is it
+replayed on the real one, so a failing op leaves the document untouched and the error
+names its index.
+
 **`set_attr` empty-string semantics:** ``value=""`` deletes the named
 attribute (canonical "absent") rather than writing ``attr=""``. Several SVG
 renderers — Inkscape 1.4 included — treat the empty-string form as a
@@ -29,6 +37,7 @@ exceptions also get their traceback dumped to ``stderr.txt`` before being
 re-raised so Inkscape logs them.
 """
 
+import copy
 import json
 import os
 import traceback
@@ -82,6 +91,137 @@ def _parse_svg_fragment(xml_str: str) -> list:
     return elements
 
 
+class _EditError(Exception):
+    """An op that cannot be applied; the message is reported to the caller."""
+
+
+def _select(root, xpath) -> list:
+    if not xpath or not isinstance(xpath, str):
+        raise _EditError("'xpath' is required")
+    try:
+        matches = root.xpath(xpath, namespaces=_NS_MAP)
+    except etree.XPathEvalError as exc:
+        raise _EditError(f"bad xpath {xpath!r}: {exc}") from exc
+
+    # An XPath can legitimately evaluate to something other than a node-set —
+    # `//@id` yields strings, `count(...)` a float. Those have no .append/.getparent,
+    # and AttributeError isn't in the mutation handler below, so the exception escaped
+    # effect(), result.json was never written, and the caller sat out the full 15s
+    # timeout instead of getting an error.
+    if not isinstance(matches, list):
+        raise _EditError(
+            f"xpath {xpath!r} evaluated to {type(matches).__name__}, not elements — edit_xml needs an element node-set"
+        )
+    if not matches:
+        raise _EditError(f"xpath matched no nodes: {xpath!r}")
+    non_elements = [m for m in matches if not isinstance(m, etree._Element)]
+    if non_elements:
+        raise _EditError(
+            f"xpath {xpath!r} matched {len(non_elements)} non-element result(s) "
+            f"(e.g. {type(non_elements[0]).__name__}) — edit_xml only mutates elements"
+        )
+    return matches
+
+
+def _set_attr(node, name: str, raw_value) -> None:
+    # Empty string = delete the attribute (canonical "absent") rather than write
+    # attr="". Some SVG renderers treat attr="" as malformed and hide the element
+    # entirely (notably filter="" on Inkscape 1.4). Callers wanting an explicit empty
+    # string can use set_text on a child or bypass via edit_xml(replace).
+    if raw_value == "":
+        # Pop both Clark-notation and prefix-mapped forms.
+        if name in node.attrib:
+            del node.attrib[name]
+        elif ":" in name:
+            prefix, local = name.split(":", 1)
+            ns_uri = _NS_MAP.get(prefix)
+            if ns_uri:
+                clark = f"{{{ns_uri}}}{local}"
+                if clark in node.attrib:
+                    del node.attrib[clark]
+    elif ":" in name and not name.startswith("{"):
+        prefix, local = name.split(":", 1)
+        ns_uri = _NS_MAP.get(prefix)
+        node.set(f"{{{ns_uri}}}{local}" if ns_uri else name, str(raw_value))
+    else:
+        node.set(name, str(raw_value))
+
+
+def _apply(root, op) -> int:
+    """Apply one edit op to the tree under `root`; return the number of nodes affected."""
+    if not isinstance(op, dict):
+        raise _EditError("each op must be an object")
+    action = op.get("action")
+    if action not in _EDIT_XML_ACTIONS:
+        raise _EditError(f"unknown action {action!r}; valid: {sorted(_EDIT_XML_ACTIONS)}")
+    xpath = op.get("xpath")
+    matches = _select(root, xpath)
+
+    affected = 0
+    try:
+        for node in matches:
+            if action == "append":
+                for frag in _parse_svg_fragment(op["xml"]):
+                    node.append(frag)
+            elif action == "insert_before":
+                for frag in _parse_svg_fragment(op["xml"]):
+                    node.addprevious(frag)
+            elif action == "insert_after":
+                # Reversed: each addnext lands immediately after `node`, so
+                # inserting in reverse preserves the fragment's own order.
+                for frag in reversed(_parse_svg_fragment(op["xml"])):
+                    node.addnext(frag)
+            elif action == "remove":
+                parent = node.getparent()
+                if parent is not None:
+                    parent.remove(node)
+            elif action == "set_attr":
+                _set_attr(node, op["name"], op.get("value", ""))
+            elif action == "set_text":
+                node.text = op.get("text", "")
+            elif action == "replace":
+                parent = node.getparent()
+                if parent is None:
+                    raise ValueError("cannot replace the document root")
+                frags = _parse_svg_fragment(op["xml"])
+                parent.replace(node, frags[0])
+                # Any further siblings follow the one that took node's place.
+                for extra in reversed(frags[1:]):
+                    frags[0].addnext(extra)
+            affected += 1
+    except (KeyError, ValueError, etree.XMLSyntaxError) as exc:
+        raise _EditError(f"mutation failed: {exc}") from exc
+    return affected
+
+
+def run_ops(root, spec) -> dict:
+    """Apply a single op or an {"ops": [...]} batch to `root`; return the result payload.
+
+    A batch is rehearsed on a copy first, so it is all-or-nothing.
+    """
+    if not isinstance(spec, dict):
+        return {"ok": False, "error": "input.json must decode to an object"}
+    if "ops" not in spec:
+        try:
+            affected = _apply(root, spec)
+        except _EditError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "action": spec.get("action"), "xpath": spec.get("xpath"), "affected": affected}
+
+    ops = spec["ops"]
+    if not isinstance(ops, list) or not ops:
+        return {"ok": False, "error": "'ops' must be a non-empty list"}
+    rehearsal = copy.deepcopy(root)
+    for i, op in enumerate(ops):
+        try:
+            _apply(rehearsal, op)
+        except _EditError as exc:
+            label = op.get("action") if isinstance(op, dict) else repr(op)
+            return {"ok": False, "error": f"op {i} ({label}): {exc}"}
+    counts = [_apply(root, op) for op in ops]
+    return {"ok": True, "action": "batch", "ops": len(ops), "affected": sum(counts), "affected_per_op": counts}
+
+
 class McpEditXml(inkex.EffectExtension):
     def effect(self) -> None:
         EXCHANGE_DIR.mkdir(parents=True, exist_ok=True)
@@ -91,144 +231,16 @@ class McpEditXml(inkex.EffectExtension):
             _write_result({"ok": False, "error": f"could not read input.json: {exc}"})
             return
 
-        if not isinstance(spec, dict):
-            _write_result({"ok": False, "error": "input.json must decode to an object"})
-            return
-
-        xpath = spec.get("xpath")
-        if not xpath or not isinstance(xpath, str):
-            _write_result({"ok": False, "error": "'xpath' is required"})
-            return
-
-        action = spec.get("action")
-        if action not in _EDIT_XML_ACTIONS:
-            _write_result(
-                {
-                    "ok": False,
-                    "error": (f"unknown action {action!r}; valid: {sorted(_EDIT_XML_ACTIONS)}"),
-                }
-            )
-            return
-
         # self.svg is the <svg> root element in modern inkex; older versions
         # exposed an ElementTree. Handle both so the extension is portable.
         root = self.svg.getroot() if hasattr(self.svg, "getroot") else self.svg
-
-        try:
-            matches = root.xpath(xpath, namespaces=_NS_MAP)
-        except etree.XPathEvalError as exc:
-            _write_result({"ok": False, "error": f"bad xpath {xpath!r}: {exc}"})
-            return
-
-        # An XPath can legitimately evaluate to something other than a node-set —
-        # `//@id` yields strings, `count(...)` a float. Those have no .append/.getparent,
-        # and AttributeError isn't in the mutation handler below, so the exception escaped
-        # effect(), result.json was never written, and the caller sat out the full 15s
-        # timeout instead of getting an error.
-        if not isinstance(matches, list):
-            _write_result(
-                {
-                    "ok": False,
-                    "error": (
-                        f"xpath {xpath!r} evaluated to {type(matches).__name__}, not elements — "
-                        f"edit_xml needs an element node-set"
-                    ),
-                }
-            )
-            return
-
-        if not matches:
-            _write_result(
-                {
-                    "ok": False,
-                    "error": f"xpath matched no nodes: {xpath!r}",
-                }
-            )
-            return
-
-        non_elements = [m for m in matches if not isinstance(m, etree._Element)]
-        if non_elements:
-            _write_result(
-                {
-                    "ok": False,
-                    "error": (
-                        f"xpath {xpath!r} matched {len(non_elements)} non-element result(s) "
-                        f"(e.g. {type(non_elements[0]).__name__}) — edit_xml only mutates elements"
-                    ),
-                }
-            )
-            return
-
-        affected = 0
-        try:
-            for node in matches:
-                if action == "append":
-                    for frag in _parse_svg_fragment(spec["xml"]):
-                        node.append(frag)
-                elif action == "insert_before":
-                    for frag in _parse_svg_fragment(spec["xml"]):
-                        node.addprevious(frag)
-                elif action == "insert_after":
-                    # Reversed: each addnext lands immediately after `node`, so
-                    # inserting in reverse preserves the fragment's own order.
-                    for frag in reversed(_parse_svg_fragment(spec["xml"])):
-                        node.addnext(frag)
-                elif action == "remove":
-                    parent = node.getparent()
-                    if parent is not None:
-                        parent.remove(node)
-                elif action == "set_attr":
-                    # Empty string = delete the attribute (canonical "absent")
-                    # rather than write attr="". Some SVG renderers treat
-                    # attr="" as malformed and hide the element entirely
-                    # (notably filter="" on Inkscape 1.4). Callers wanting an
-                    # explicit empty string can use set_text on a child or
-                    # bypass via edit_xml(replace).
-                    raw_value = spec.get("value", "")
-                    if raw_value == "":
-                        # Pop both Clark-notation and prefix-mapped forms.
-                        attr_name = spec["name"]
-                        if attr_name in node.attrib:
-                            del node.attrib[attr_name]
-                        else:
-                            # Try resolving namespaced form like "inkscape:label".
-                            if ":" in attr_name:
-                                prefix, local = attr_name.split(":", 1)
-                                ns_uri = _NS_MAP.get(prefix)
-                                if ns_uri:
-                                    clark = f"{{{ns_uri}}}{local}"
-                                    if clark in node.attrib:
-                                        del node.attrib[clark]
-                    else:
-                        node.set(spec["name"], str(raw_value))
-                elif action == "set_text":
-                    node.text = spec.get("text", "")
-                elif action == "replace":
-                    parent = node.getparent()
-                    if parent is None:
-                        raise ValueError("cannot replace the document root")
-                    frags = _parse_svg_fragment(spec["xml"])
-                    parent.replace(node, frags[0])
-                    # Any further siblings follow the one that took node's place.
-                    for extra in reversed(frags[1:]):
-                        frags[0].addnext(extra)
-                affected += 1
-        except (KeyError, ValueError, etree.XMLSyntaxError) as exc:
-            _write_result({"ok": False, "error": f"mutation failed: {exc}"})
-            return
-
-        # Name the document that was actually mutated. Inkscape runs an effect against
-        # the ACTIVE desktop and offers no way to pick another, so this is the caller's
-        # only way to confirm the edit landed where they intended.
-        _write_result(
-            {
-                "ok": True,
-                "action": action,
-                "xpath": xpath,
-                "affected": affected,
-                "active_document": _document_identity(root),
-            }
-        )
+        result = run_ops(root, spec)
+        if result["ok"]:
+            # Name the document that was actually mutated. Inkscape runs an effect against
+            # the ACTIVE desktop and offers no way to pick another, so this is the caller's
+            # only way to confirm the edit landed where they intended.
+            result["active_document"] = _document_identity(root)
+        _write_result(result)
 
 
 def _write_result(payload: dict) -> None:

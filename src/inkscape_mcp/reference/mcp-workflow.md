@@ -76,6 +76,21 @@ inkscape_live(
 
 Actions inside the JSON payload: `append` · `insert_before` · `insert_after` · `replace` · `remove` · `set_attr` (name, value) · `set_text` (text). Fragments inherit SVG/Inkscape namespaces automatically — no need to declare `xmlns=` per fragment.
 
+**Batch several edits into one undo step** — use this whenever a change touches more than one
+element (restyling a set, moving a group and its label, re-spacing arrows):
+
+```
+inkscape_live(operation="edit_xml", payload='{"ops": [
+  {"xpath": "//*[@id=\'arrow-on\']",  "action": "set_attr", "name": "d", "value": "M 53,48 V 74.8"},
+  {"xpath": "//*[@id=\'text65\']",    "action": "set_attr", "name": "x", "value": "50"},
+  {"xpath": "//*[@id=\'layer1\']",    "action": "append",   "xml": "<g id=\'new\'/>"}
+]}')
+```
+
+The batch is all-or-nothing: it is rehearsed on a copy first, and if any op fails nothing is
+applied and the error names the op (`op 1 (remove): xpath matched no nodes`). Later ops see
+earlier ones. An op without `xpath` uses `target`.
+
 **What `edit_xml` covers that `apply_action` can't:**
 
 - Adding `<filter>`, `<marker>`, `<symbol>`, `<pattern>`, `<clipPath>` to `<defs>`.
