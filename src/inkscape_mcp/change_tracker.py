@@ -6,8 +6,10 @@ and compared with a baseline kept on disk. The baseline lives in a file rather t
 memory because the parties that use it are separate processes: the MCP server (the
 `changes` live operation) and the Claude Code hooks that call this module's CLI:
 
+  python -m inkscape_mcp.change_tracker hook-session  # session (re)started: outline, mark
   python -m inkscape_mcp.change_tracker hook-stop     # agent finished: mark baseline
-  python -m inkscape_mcp.change_tracker hook-prompt   # user wrote: report changes, re-mark
+  python -m inkscape_mcp.change_tracker hook-prompt   # user wrote: report changes + outline, re-mark
+  python -m inkscape_mcp.change_tracker outline       # print the live figure outline
 
 Hook commands never fail loudly and give up after a few seconds: a broken hook would
 otherwise get in the way of every message.
@@ -46,6 +48,10 @@ _VOLATILE_ATTRS = frozenset(
 _MAX_LINES = 30
 _MAX_VALUE = 60
 _HOOK_TIMEOUT_S = 8.0
+_OUTLINE_INTRO = (
+    "Outline of the figure open in Inkscape (refresh with inkscape_live operation=outline; "
+    "address elements by these ids):"
+)
 
 
 # ---- fingerprinting ----------------------------------------------------------------
@@ -240,8 +246,8 @@ def _passive_bus() -> Any:
         return InkscapeDBus()
 
 
-def snapshot_live() -> tuple[str, dict[str, dict[str, Any]]] | None:
-    """Fingerprint the live active document, or None if the bridge isn't up."""
+def snapshot_live() -> bytes | None:
+    """Export the live active document, or None if the bridge isn't up."""
     from .tools.live import _SCRATCH_DIR, _export_document
 
     bus = _passive_bus()
@@ -251,9 +257,22 @@ def snapshot_live() -> tuple[str, dict[str, dict[str, Any]]] | None:
     scratch = _SCRATCH_DIR / f"track-{uuid.uuid4().hex}.svg"
     try:
         _export_document(bus, scratch)
-        return fingerprint(scratch.read_bytes())
+        return scratch.read_bytes()
     finally:
         scratch.unlink(missing_ok=True)
+
+
+def _outline(svg_bytes: bytes) -> str:
+    from .figure_outline import outline
+
+    try:
+        return outline(svg_bytes)
+    except Exception:  # an outline is a nicety; never let it cost the change report
+        return ""
+
+
+def _hook_output(event: str, context: str) -> str:
+    return json.dumps({"hookSpecificOutput": {"hookEventName": event, "additionalContext": context}})
 
 
 def _with_timeout(fn: Any, timeout_s: float) -> Any:
@@ -274,24 +293,36 @@ def _with_timeout(fn: Any, timeout_s: float) -> Any:
 
 def main(argv: list[str]) -> int:
     command = argv[0] if argv else ""
-    if command not in {"hook-stop", "hook-prompt", "mark", "report"}:
+    if command not in {"hook-session", "hook-stop", "hook-prompt", "mark", "report", "outline"}:
         print(__doc__)
         return 2
 
-    snap = _with_timeout(snapshot_live, _HOOK_TIMEOUT_S)
-    if snap is None:
+    svg_bytes = _with_timeout(snapshot_live, _HOOK_TIMEOUT_S)
+    if svg_bytes is None:
         return 0  # Inkscape not running / unreachable: say nothing
-    docname, elements = snap
+    if command == "outline":
+        print(_outline(svg_bytes))
+        return 0
+    docname, elements = fingerprint(svg_bytes)
 
     if command in {"hook-stop", "mark"}:
         save_baseline(docname, elements)
+        return 0
+    if command == "hook-session":
+        save_baseline(docname, elements)
+        outline = _outline(svg_bytes)
+        if outline:
+            print(_hook_output("SessionStart", f"{_OUTLINE_INTRO}\n{outline}"))
         return 0
 
     report = format_report(compare(docname, elements))
     if command == "report":
         print(report or "no changes")
     elif report:
-        print(json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": report}}))
+        outline = _outline(svg_bytes)
+        if outline:
+            report += f"\n\n{_OUTLINE_INTRO}\n{outline}"
+        print(_hook_output("UserPromptSubmit", report))
     return 0
 
 

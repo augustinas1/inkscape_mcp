@@ -24,14 +24,17 @@ DOC = """<?xml version="1.0"?>
 """
 
 
-def _fp(zoom="1", gene_transform="", label="OFF", extra="", doc=DOC):
-    svg = doc.format(
+def _svg(zoom="1", gene_transform="", label="OFF", extra="", doc=DOC) -> bytes:
+    return doc.format(
         zoom=zoom,
         gene_transform=f' transform="{gene_transform}"' if gene_transform else "",
         label=label,
         extra=extra,
-    )
-    return ct.fingerprint(svg.encode())
+    ).encode()
+
+
+def _fp(**kwargs):
+    return ct.fingerprint(_svg(**kwargs))
 
 
 @pytest.fixture(autouse=True)
@@ -109,29 +112,57 @@ def test_report_is_silent_without_changes():
     assert ct.format_report({"doc": "fig.svg", "had_baseline": True, "changes": []}) == ""
 
 
-def test_hook_prompt_emits_additional_context(monkeypatch, capsys):
+def test_hook_prompt_emits_changes_and_outline(monkeypatch, capsys):
     _, before = _fp()
     ct.save_baseline("fig.svg", before)
-    _, after = _fp(gene_transform="translate(0,12)")
-    monkeypatch.setattr(ct, "snapshot_live", lambda: ("fig.svg", after))
+    monkeypatch.setattr(ct, "snapshot_live", lambda: _svg(gene_transform="translate(0,12)"))
 
     assert ct.main(["hook-prompt"]) == 0
     out = json.loads(capsys.readouterr().out)
     context = out["hookSpecificOutput"]["additionalContext"]
     assert out["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
-    assert "gene-off" in context and "translate(0,12)" in context
+    assert "~ <g#gene-off>: transform: none → translate(0,12)" in context
+    # The fresh outline follows the change list, with the moved group's new position.
+    assert ct._OUTLINE_INTRO in context
+    assert "body  rect  x 41..69  y 40.5..47.5" in context
+
+
+def test_hook_prompt_without_changes_says_nothing(monkeypatch, capsys):
+    _, elements = _fp()
+    ct.save_baseline("fig.svg", elements)
+    monkeypatch.setattr(ct, "snapshot_live", _svg)
+    assert ct.main(["hook-prompt"]) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_hook_session_emits_outline_and_marks(monkeypatch, capsys):
+    monkeypatch.setattr(ct, "snapshot_live", _svg)
+    assert ct.main(["hook-session"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["hookSpecificOutput"]["hookEventName"] == "SessionStart"
+    assert "gene-off  g" in out["hookSpecificOutput"]["additionalContext"]
+    assert ct.load_baseline()["doc"] == "fig.svg"
+
+
+def test_outline_failure_keeps_the_change_report(monkeypatch, capsys):
+    _, before = _fp()
+    ct.save_baseline("fig.svg", before)
+    monkeypatch.setattr(ct, "snapshot_live", lambda: _svg(label="INACTIVE"))
+    monkeypatch.setattr("inkscape_mcp.figure_outline.outline", lambda *_: 1 / 0)
+    assert ct.main(["hook-prompt"]) == 0
+    context = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert "INACTIVE" in context and ct._OUTLINE_INTRO not in context
 
 
 def test_hooks_say_nothing_when_inkscape_is_down(monkeypatch, capsys):
     monkeypatch.setattr(ct, "snapshot_live", lambda: None)
-    assert ct.main(["hook-prompt"]) == 0
-    assert ct.main(["hook-stop"]) == 0
+    for command in ("hook-prompt", "hook-stop", "hook-session", "outline"):
+        assert ct.main([command]) == 0
     assert capsys.readouterr().out == ""
     assert not ct.BASELINE_FILE.exists()
 
 
 def test_hook_stop_marks_baseline(monkeypatch):
-    _, elements = _fp()
-    monkeypatch.setattr(ct, "snapshot_live", lambda: ("fig.svg", elements))
+    monkeypatch.setattr(ct, "snapshot_live", _svg)
     assert ct.main(["hook-stop"]) == 0
     assert ct.load_baseline()["doc"] == "fig.svg"

@@ -140,6 +140,10 @@ operations. Highlights:
   deleted, moved, restyled elements by id); re-baselines unless `payload` is `{"mark": false}`.
   Reads an export snapshot, so it leaves no undo step. See INSTALL.md for the Claude Code hooks
   that run it automatically.
+- **Orientation:** `outline` — one line per element (id, label, kind, text, colours, bbox in
+  user units), nested like the Objects dialog; `target` = an id outlines that subtree. A
+  typical figure is ~2–3 KB, so read it before `get_document_xml` when looking for an object.
+  No undo step.
 - **Editing:** `apply_action`, `insert_svg`, `edit_xml`, `path_edit`.
 - **Inspection:** `inspect_selection`, `inspect_layers`, `inspect_defs`, `inspect_view`, `inspect_pages`, `inspect_element`.
 - **Discovery:** `list_actions` (filtered).
