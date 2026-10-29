@@ -143,6 +143,8 @@ def test_ensure_inkscape_launches_under_bus(monkeypatch, tmp_path):
     assert popen.call_args.args[0] == [str(exe), "/tmp/doc.svg"]
     assert popen.call_args.kwargs["env"]["DBUS_SESSION_BUS_ADDRESS"] == "unix:path=/tmp/b"
     assert popen.call_args.kwargs["start_new_session"] is True
+    # Claude Code's ~1M RLIMIT_NOFILE crashed every extension child Inkscape forked.
+    assert popen.call_args.kwargs["preexec_fn"] is mac_bus_manager._cap_open_files
 
 
 # ---- graceful window-scope failures -----------------------------------------------

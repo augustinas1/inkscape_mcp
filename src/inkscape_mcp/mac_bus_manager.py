@@ -48,6 +48,8 @@ _DEFAULT_DBUS_DAEMONS = (
 # First launch on macOS rebuilds the font cache and can take well over the Windows budget.
 _INKSCAPE_REGISTER_TIMEOUT_S = 60.0
 _BUS_START_TIMEOUT_S = 10.0
+# macOS OPEN_MAX: ample for Inkscape, small enough for glib's pre-exec fd walk.
+_MAX_OPEN_FILES = 10240
 _POLL_INTERVAL_S = 0.3
 
 
@@ -173,6 +175,22 @@ def _inkscape_registered(address: str) -> bool:
         bus._close()
 
 
+def _cap_open_files() -> None:
+    """Lower the soft open-files limit in the Inkscape child before exec.
+
+    Claude Code raises RLIMIT_NOFILE to ~1M, and every process it spawns inherits that.
+    Inkscape's bundled glib sizes its pre-exec fd walk by that limit, so each extension
+    run (every bridge edit and inspect is one) overflowed the forked child's stack and
+    crashed it before the script started — the call then timed out.
+    """
+    if sys.platform != "win32":  # resource is POSIX-only; this module is imported on Windows too
+        import resource
+
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        if soft == resource.RLIM_INFINITY or soft > _MAX_OPEN_FILES:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (_MAX_OPEN_FILES, hard))
+
+
 def ensure_inkscape(address: str, inkscape_executable: str, open_path: str | None = None) -> bool:
     """Ensure Inkscape is running on ``address``; launch it under the bus if not.
 
@@ -198,6 +216,7 @@ def ensure_inkscape(address: str, inkscape_executable: str, open_path: str | Non
         stdin=subprocess.DEVNULL,
         start_new_session=True,
         close_fds=True,
+        preexec_fn=_cap_open_files,
     )
 
     deadline = time.monotonic() + _INKSCAPE_REGISTER_TIMEOUT_S
