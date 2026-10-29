@@ -768,10 +768,19 @@ def test_cli_wrapper_construction_requires_a_real_executable(tmp_path):
 
 
 def _rect_xy(path: Path, rect_id: str) -> tuple[float, float]:
+    """Effective top-left of the rect, transform included.
+
+    With Inkscape's "Store transformation: Preserved" preference, a move lands in
+    `transform` rather than in x/y, so the raw attributes alone can't tell it moved.
+    """
+    from inkex.transforms import Transform
+
     root = etree.parse(str(path)).getroot()
     for el in root.iter(f"{SVG}rect"):
         if el.get("id") == rect_id:
-            return float(el.get("x", "0")), float(el.get("y", "0"))
+            origin = (float(el.get("x", "0")), float(el.get("y", "0")))
+            point = Transform(el.get("transform", "")).apply_to_point(origin)
+            return round(point.x, 6), round(point.y, 6)
     raise AssertionError(f"rect {rect_id!r} not found in {path}")
 
 
