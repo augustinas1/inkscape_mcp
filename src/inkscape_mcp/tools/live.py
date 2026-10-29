@@ -354,7 +354,25 @@ async def _export_document_async(bus: InkscapeDBus, scratch: Path) -> None:
         raise TimeoutError(f"Inkscape did not produce {scratch} within {_EXPORT_POLL_TIMEOUT_S}s")
 
 
+_SERVER_STARTED = time.time()
+_PACKAGE_DIR = Path(__file__).resolve().parent.parent
+
+
+def _server_freshness() -> dict[str, Any]:
+    """When this server process started, and whether its source changed since (needs a restart)."""
+    newest = max((f.stat().st_mtime for f in _PACKAGE_DIR.rglob("*.py")), default=0.0)
+    info: dict[str, Any] = {"server_started": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(_SERVER_STARTED))}
+    if newest > _SERVER_STARTED:
+        info["stale"] = True
+        info["stale_note"] = (
+            "server code changed after this process started — restart it (/mcp → reconnect, or "
+            "restart the client) to load the new operations"
+        )
+    return info
+
+
 def _op_ping(bus: InkscapeDBus, operation: str, start: float) -> dict[str, Any]:
+    freshness = _server_freshness()
     if not bus.is_available():
         message = "Inkscape D-Bus bridge not reachable (is the GUI running?)"
         if not _has_window_scope(bus):
@@ -367,7 +385,7 @@ def _op_ping(bus: InkscapeDBus, operation: str, start: float) -> dict[str, Any]:
             operation,
             False,
             message,
-            data={"ok": False, "windows": [], "app_actions": 0, "window_actions": 0},
+            data={"ok": False, "windows": [], "app_actions": 0, "window_actions": 0, **freshness},
             start=start,
         )
     windows = bus.list_windows()
@@ -378,8 +396,11 @@ def _op_ping(bus: InkscapeDBus, operation: str, start: float) -> dict[str, Any]:
         "windows": windows,
         "app_actions": len(app_actions),
         "window_actions": len(window_actions),
+        **freshness,
     }
     message = f"Inkscape bridge live ({len(windows)} window(s))"
+    if freshness.get("stale"):
+        message += f"; WARNING: {freshness['stale_note']}"
     if not _has_window_scope(bus):
         # "windows" are document objects here and "window_actions" are document-scope.
         data["window_scope_available"] = False
@@ -435,6 +456,13 @@ def _op_set_selection(bus: InkscapeDBus, operation: str, target: str, start: flo
     )
 
 
+_FRAGMENT_NSDECLS = (
+    f'xmlns="{SVG_NS}" xmlns:inkscape="{INKSCAPE_NS}" '
+    'xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd" '
+    'xmlns:xlink="http://www.w3.org/1999/xlink"'
+)
+
+
 def _fragment_children(payload: str) -> list[Any]:
     """Parse a payload into the elements to insert, accepting a wrapper or bare nodes.
 
@@ -449,9 +477,10 @@ def _fragment_children(payload: str) -> list[Any]:
     try:
         root = etree.fromstring(text.encode("utf-8"), parser=parser)
     except etree.XMLSyntaxError:
-        # Bare sibling nodes have no single root — wrap and retry.
+        # Bare sibling nodes have no single root, or use inkscape:/sodipodi:/xlink: prefixes
+        # without declaring them — wrap (declaring the usual prefixes) and retry.
         try:
-            root = etree.fromstring(f'<svg xmlns="{SVG_NS}">{text}</svg>'.encode(), parser=parser)
+            root = etree.fromstring(f"<svg {_FRAGMENT_NSDECLS}>{text}</svg>".encode(), parser=parser)
         except etree.XMLSyntaxError:
             return []
     local = etree.QName(root).localname if isinstance(root.tag, str) else ""
@@ -1041,6 +1070,83 @@ async def _op_execute_inkex(
         data={"result": result.data.get("result")},
         start=start,
     )
+
+
+async def _op_component(
+    bus: InkscapeDBus, operation: str, target: str, payload: str, window_id: int, start: float
+) -> dict[str, Any]:
+    """Build a pre-styled figure component (figure_kit) and optionally insert it.
+
+    payload (JSON):
+      kind    — arrow | gene | rna_strand | protein | decay, or "style" to return the tokens
+      params  — the component's parameters, including a stable "id"
+      style   — path to a style.json overriding the default tokens (or $INKSCAPE_MCP_STYLE)
+      into    — insert into this parent id;  replace — replace this id (defaults to `target`)
+
+    Without into/replace it only returns the fragment (preview it, then insert). Inserting is
+    one undo step; the stock arrow marker is added to <defs> if the fragment needs it.
+    """
+    from .. import figure_kit
+
+    try:
+        args = json.loads(payload) if payload else {}
+    except json.JSONDecodeError as exc:
+        return _result(operation, False, f"payload is not valid JSON: {exc}", error=str(exc), start=start)
+    if not isinstance(args, dict):
+        return _result(operation, False, "payload must decode to a JSON object", error="bad payload", start=start)
+    style_path = args.get("style") or os.environ.get("INKSCAPE_MCP_STYLE")
+    style = figure_kit.load_style(style_path)
+    kind = args.get("kind", "")
+    if kind == "style":
+        return _result(
+            operation, True, json.dumps(style, indent=1), data={"style": style, "path": style_path}, start=start
+        )
+    try:
+        xml = figure_kit.build(kind, args.get("params") or {}, style)
+    except ValueError as exc:
+        return _result(operation, False, str(exc), error="bad component", start=start)
+
+    replace_id = str(args.get("replace") or target or "").lstrip("#")
+    into = str(args.get("into") or "").lstrip("#")
+    if not (replace_id or into):
+        return _result(
+            operation,
+            True,
+            f"{kind} fragment built (not inserted) — preview it, or pass into/replace to insert",
+            data={"xml": xml, "kind": kind},
+            start=start,
+        )
+
+    ops: list[dict[str, Any]] = [
+        {"xpath": f"//*[@id='{replace_id}']", "action": "replace", "xml": xml}
+        if replace_id
+        else {"xpath": f"//*[@id='{into}']", "action": "append", "xml": xml}
+    ]
+    marker = style["marker"]
+    if f"url(#{marker})" in xml:
+        snapshot = _SCRATCH_DIR / f"component-{uuid.uuid4().hex[:8]}.svg"
+        _SCRATCH_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            await _export_document_async(bus, snapshot)
+            doc = etree.fromstring(snapshot.read_bytes(), parser=etree.XMLParser(huge_tree=True))
+        finally:
+            snapshot.unlink(missing_ok=True)
+        if doc.find(f".//*[@id='{marker}']") is None and marker == "Triangle":
+            # Appended AFTER the referencing paths: inkscape:collect="always" drops a marker
+            # that is unreferenced at the moment it lands.
+            if doc.find(f"{{{SVG_NS}}}defs") is not None:
+                ops.append({"xpath": "/svg:svg/svg:defs[1]", "action": "append", "xml": figure_kit.TRIANGLE_MARKER})
+            else:
+                ops.append(
+                    {"xpath": "/svg:svg", "action": "append", "xml": f"<defs>{figure_kit.TRIANGLE_MARKER}</defs>"}
+                )
+    result = await _op_edit_xml(bus, operation, "", json.dumps({"ops": ops}), window_id, start)
+    if result.get("success"):
+        result["message"] = (
+            f"{kind} inserted ({'replacing ' + replace_id if replace_id else 'into ' + into}); " + result["message"]
+        )
+        result["data"]["xml"] = xml
+    return result
 
 
 async def _run_png_export(cmd: list[str], out_path: Path) -> str:
@@ -1790,6 +1896,8 @@ async def inkscape_live(
             return await _op_inspect_element(bus, operation, target, start)
         if operation == "execute_inkex":
             return await _op_execute_inkex(bus, operation, payload, start)
+        if operation == "component":
+            return await _op_component(bus, operation, target, payload, window_id, start)
         if operation == "preview":
             return await _op_preview(bus, operation, target, payload, config, start)
         if operation == "rasterize":

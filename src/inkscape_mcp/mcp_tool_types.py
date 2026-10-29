@@ -124,6 +124,7 @@ InkscapeLiveOperation = Literal[
     "execute_inkex",
     "rasterize",
     "preview",
+    "component",
     # GUI-only: Inkscape's offset machinery does not compute headlessly, so the
     # inkscape_vector operation of the same name refuses and points here.
     "path_offset",

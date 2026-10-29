@@ -153,6 +153,11 @@ operations. Highlights:
 - **Drafting:** `preview` — render a draft fragment in the live document's context (replacing
   an element, or appended into a parent) without changing the document; returns after/before
   PNGs framed on the draft. No undo step.
+- **Components:** `component` — pre-styled, parametric parts from `figure_kit` (`arrow`, `gene`,
+  `rna_strand`, `protein`, `decay`) in a restrained Nature-Reviews-like schematic style, built from
+  shared style tokens. Override the tokens with a `style.json` (payload `style`, or
+  `$INKSCAPE_MCP_STYLE`); `kind: "style"` returns the effective tokens. Returns the fragment, or
+  inserts it (`into` / `replace`) as one undo step, adding the stock arrow marker if needed.
 
 Full payload shapes for each live op are in
 [`src/inkscape_mcp/reference/mcp-workflow.md`](../src/inkscape_mcp/reference/mcp-workflow.md).

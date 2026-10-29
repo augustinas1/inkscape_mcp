@@ -129,3 +129,10 @@ async def test_rasterize_area_is_in_document_units(cli):
     assert res["success"] is True
     expected = [v * PX_PER_MM for v in (10, 20, 40, 60)]  # x:y:w:h -> x0:y0:x1:y1
     assert [float(v) for v in _arg(cli[0], "export-area").split(":")] == pytest.approx(expected, abs=0.01)
+
+
+async def test_fragments_may_use_undeclared_inkscape_prefixes(cli):
+    res = await _preview(target="old", xml='<g id="kit" inkscape:label="kit"><rect id="r" width="2" height="2"/></g>')
+    assert res["success"] is True, res
+    tree = etree.parse(str(Path(_arg(cli[0], "export-filename")).with_suffix(".svg")))
+    assert tree.find(".//*[@id='kit']").get("{http://www.inkscape.org/namespaces/inkscape}label") == "kit"

@@ -98,6 +98,21 @@ earlier ones. An op without `xpath` uses `target`.
 - Restructuring `<defs>` / `<metadata>` / Inkscape namespace blocks.
 - Setting attributes on elements that lack ids and don't match a clean CSS selector.
 
+### Components and style tokens
+
+For schematic figures, build parts with `inkscape_live(operation="component")` instead of
+hand-writing geometry — they share one set of style tokens, so parts drawn on different days match:
+
+```
+inkscape_live(operation="component", payload='{"kind": "rna_strand",
+  "params": {"id": "mrna2", "x": 104, "y": 82, "waves": 1.5}, "style": "/abs/figures/style.json"}')
+```
+
+Kinds: `arrow` (x1, y1, x2, y2, symbol, sub, label_side), `gene` (x, y, state on/off),
+`rna_strand` (x, y, length, waves, amplitude, label, symbol), `protein` (cx, cy, size, mirror,
+label, symbol), `decay` (x, y, species rna/protein). Every part is a `<g>` with stable ids and
+`inkscape:label`s. Without `into`/`replace` the fragment is returned — `preview` it, then insert.
+
 ### Arrows
 
 Draw an arrow as a `<path>` stroke with an Inkscape stock marker, exactly as Inkscape writes one
