@@ -256,3 +256,24 @@ async def test_other_ops_still_launch_the_default_canvas(_down_mac_bridge):
     _, launches = _down_mac_bridge
     await live.inkscape_live("delete_selected", window_id=0)
     assert launches == [None]
+
+
+async def test_extension_subprocess_never_writes_bytecode(monkeypatch, tmp_path):
+    """A __pycache__ inside Inkscape.app breaks its code seal; macOS then kills its Python."""
+    from inkscape_mcp.tools import extension
+
+    seen = {}
+
+    class _Proc:
+        returncode = 0
+
+        async def communicate(self):
+            return b"", b""
+
+    async def _fake_exec(*argv, **kwargs):
+        seen.update(kwargs["env"])
+        return _Proc()
+
+    monkeypatch.setattr(extension.asyncio, "create_subprocess_exec", _fake_exec)
+    await extension._run_subprocess(["python", "x.py"], tmp_path)
+    assert seen["PYTHONDONTWRITEBYTECODE"] == "1"

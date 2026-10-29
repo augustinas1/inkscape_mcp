@@ -211,6 +211,10 @@ async def _run_subprocess(argv: list[str], cwd: Path | None) -> tuple[bool, byte
     env = os.environ.copy()
     # inkex extensions import inkex; make sure both the bundled and pip-installed
     # paths are reachable. cwd handles the bundled case (relative imports).
+    # Never write bytecode next to the scripts: on macOS they live inside the signed
+    # Inkscape.app, and a stray __pycache__ breaks its code seal, after which macOS
+    # SIGKILLs the bundled Python and every live extension stops running.
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
     proc = await asyncio.create_subprocess_exec(
         *argv,
         stdout=asyncio.subprocess.PIPE,
