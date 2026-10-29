@@ -235,3 +235,26 @@ def outline(svg_bytes: bytes, root_id: str = "") -> str:
     if outliner.truncated:
         lines.append(f"… outline truncated at {_MAX_LINES} lines; outline a group by id for the rest")
     return "\n".join(lines)
+
+
+def element_box(svg_bytes: bytes, element_id: str) -> Box | None:
+    """Bounding box (user units, all transforms applied) of the element with `element_id`."""
+    svg = inkex.load_svg(svg_bytes).getroot()
+    el = svg.getElementById(element_id)
+    if el is None:
+        raise KeyError(f"no element with id {element_id!r}")
+    return _Outliner()._box_only(el)
+
+
+def user_area_to_px(svg_bytes: bytes, box: Box) -> str:
+    """Inkscape's --export-area value (CSS px from the page origin) for a user-unit box."""
+    svg = inkex.load_svg(svg_bytes).getroot()
+    scale = svg.uutounit(1, "px")
+    view_box = [float(v) for v in re.split(r"[\s,]+", (svg.get("viewBox") or "0 0 0 0").strip())[:2]]
+    min_x, min_y = [*view_box, 0.0, 0.0][:2]
+    left, top, right, bottom = box
+    return ":".join(_fmt_px((v - o) * scale) for v, o in ((left, min_x), (top, min_y), (right, min_x), (bottom, min_y)))
+
+
+def _fmt_px(value: float) -> str:
+    return f"{value:.2f}".rstrip("0").rstrip(".")

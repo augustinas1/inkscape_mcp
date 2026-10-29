@@ -30,6 +30,8 @@ class LiveResult(BaseModel):
     error: str = ""
 
 
+INKSCAPE_NS = "http://www.inkscape.org/namespaces/inkscape"
+
 _BUS: InkscapeDBus | None = None
 
 _SCRATCH_DIR = Path(os.path.expanduser("~/.cache/inkscape_mcp"))
@@ -1041,6 +1043,146 @@ async def _op_execute_inkex(
     )
 
 
+async def _run_png_export(cmd: list[str], out_path: Path) -> str:
+    """Run an Inkscape CLI export; return '' on success or a failure message."""
+    # asyncio subprocess rather than subprocess.run: a 60s blocking wait here froze every
+    # other in-flight tool call (this runs on the request path).
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=60)
+    except TimeoutError:
+        proc.kill()
+        await proc.wait()
+        return "inkscape export timed out after 60s"
+    if proc.returncode != 0 or not out_path.exists():
+        stderr_tail = (stderr_b or b"").decode("utf-8", errors="replace")[-1000:]
+        return f"inkscape export failed (rc={proc.returncode}); stderr: {stderr_tail}"
+    return ""
+
+
+async def _op_preview(
+    bus: InkscapeDBus, operation: str, target: str, payload: str, config: Any, start: float
+) -> dict[str, Any]:
+    """Render a draft in the live document's context WITHOUT changing the document.
+
+    payload (JSON):
+      xml      — fragment to try (one or more elements); optional: without it, preview just
+                 renders `focus` from the live document
+      replace  — id of the element the draft would replace (defaults to `target`)
+      into     — id of the parent to append the draft to when not replacing (default: the
+                 parent of `replace`, else the first layer, else the root)
+      focus    — id to frame (default: the draft's first id, else `replace`)
+      margin   — padding around the framed box, in document units (default 3)
+      dpi      — default 600
+      before   — also render the unchanged document over the same area (default: true
+                 when replacing)
+
+    Works on an export snapshot: Inkscape's document and undo history are untouched.
+    """
+    from ..figure_outline import element_box, user_area_to_px
+
+    try:
+        args = json.loads(payload) if payload else {}
+    except json.JSONDecodeError as exc:
+        return _result(operation, False, f"payload is not valid JSON: {exc}", error=str(exc), start=start)
+    if not isinstance(args, dict):
+        return _result(operation, False, "payload must decode to a JSON object", error="bad payload", start=start)
+
+    replace_id = str(args.get("replace") or target or "").lstrip("#")
+    frags = _fragment_children(str(args["xml"])) if args.get("xml") else []
+    if args.get("xml") and not frags:
+        return _result(operation, False, "xml did not parse to any element", error="bad xml", start=start)
+    focus = str(args.get("focus") or next((f.get("id") for f in frags if f.get("id")), None) or replace_id)
+    if not focus:
+        return _result(
+            operation,
+            False,
+            "nothing to frame: give the draft an id, or pass focus/replace",
+            error="no focus",
+            start=start,
+        )
+
+    _SCRATCH_DIR.mkdir(parents=True, exist_ok=True)
+    stem = f"preview-{uuid.uuid4().hex[:8]}"
+    before_svg = _SCRATCH_DIR / f"{stem}-before.svg"
+    await _export_document_async(bus, before_svg)
+    original = before_svg.read_bytes()
+
+    doc = etree.fromstring(original, parser=etree.XMLParser(huge_tree=True))
+    if frags:
+        if replace_id:
+            old = doc.find(f".//*[@id='{replace_id}']")
+            if old is None:
+                return _result(
+                    operation, False, f"no element with id {replace_id!r} to replace", error="unknown id", start=start
+                )
+            parent = old.getparent()
+            index = parent.index(old)
+            parent.remove(old)
+            for offset, frag in enumerate(frags):
+                parent.insert(index + offset, frag)
+        else:
+            into = args.get("into")
+            if into:
+                parent = doc.find(f".//*[@id='{into}']")
+                if parent is None:
+                    return _result(
+                        operation, False, f"no element with id {into!r} to append into", error="unknown id", start=start
+                    )
+            else:
+                layer = doc.find(f".//{{{SVG_NS}}}g[@{{{INKSCAPE_NS}}}groupmode='layer']")
+                parent = layer if layer is not None else doc
+            for frag in frags:
+                parent.append(frag)
+    draft = etree.tostring(doc)
+
+    try:
+        box = element_box(draft, focus)
+    except KeyError as exc:
+        return _result(operation, False, str(exc.args[0]), error="unknown id", start=start)
+    if box is None:
+        return _result(operation, False, f"{focus!r} has no visible extent to frame", error="empty", start=start)
+    margin = float(args.get("margin", 3))
+    framed = (box[0] - margin, box[1] - margin, box[2] + margin, box[3] + margin)
+    area = user_area_to_px(draft, framed)
+    dpi = float(args.get("dpi", 600))
+    exe = str(getattr(config, "inkscape_executable", None) or _resolve_inkscape_exe(config))
+
+    renders = {"after": (_SCRATCH_DIR / f"{stem}.svg", draft)}
+    if args.get("before", bool(replace_id and frags)):
+        renders["before"] = (before_svg, original)
+    paths: dict[str, str] = {}
+    for name, (svg_path, data) in renders.items():
+        svg_path.write_bytes(data)
+        png = svg_path.with_suffix(".png")
+        cmd = [
+            exe,
+            "--app-id-tag=mcp",
+            f"--export-filename={png}",
+            "--export-type=png",
+            f"--export-area={area}",
+            f"--export-dpi={dpi}",
+            str(svg_path),
+        ]
+        failure = await _run_png_export(cmd, png)
+        if failure:
+            return _result(operation, False, failure, data={"argv": cmd}, error="export failed", start=start)
+        paths[name] = str(png)
+
+    framed_text = ", ".join(f"{v:.1f}" for v in framed)
+    return _result(
+        operation,
+        True,
+        f"preview of {focus!r} rendered (document unchanged): " + ", ".join(f"{k} {v}" for k, v in paths.items()),
+        data={"paths": paths, "focus": focus, "box": [round(v, 2) for v in box], "framed": framed_text, "dpi": dpi},
+        start=start,
+    )
+
+
 async def _op_rasterize(
     bus: InkscapeDBus,
     operation: str,
@@ -1054,6 +1196,9 @@ async def _op_rasterize(
 
     ``target`` — element id to render (uses ``--export-id``). Empty → full doc.
     ``payload`` — optional JSON: ``{"area": "x:y:w:h", "dpi": 96, "filename": "<abs>"}``.
+    ``area`` is in document user units (the coordinates every other op and ``outline``
+    report — mm for a mm-based document), converted here to the CSS-px corners Inkscape's
+    ``--export-area`` expects.
 
     Saves a fresh snapshot of the live doc first so the export reflects
     in-memory state, then shells to Inkscape's CLI for the export. Returns
@@ -1111,15 +1256,19 @@ async def _op_rasterize(
     if target:
         cmd.extend([f"--export-id={target}", "--export-id-only"])
     if area:
-        if not isinstance(area, str) or area.count(":") != 3:
+        try:
+            x, y, w, h = (float(v) for v in str(area).split(":"))
+        except ValueError:
             return _result(
                 operation,
                 False,
-                f"area must be 'x:y:w:h' (got {area!r})",
+                f"area must be 'x:y:w:h' in document units (got {area!r})",
                 error="bad area",
                 start=start,
             )
-        cmd.append(f"--export-area={area}")
+        from ..figure_outline import user_area_to_px
+
+        cmd.append(f"--export-area={user_area_to_px(snapshot.read_bytes(), (x, y, x + w, y + h))}")
     if dpi:
         try:
             cmd.append(f"--export-dpi={float(dpi)}")
@@ -1127,30 +1276,9 @@ async def _op_rasterize(
             return _result(operation, False, f"dpi must be a number: {dpi!r}", error="bad dpi", start=start)
     cmd.append(str(snapshot))
 
-    # asyncio subprocess rather than subprocess.run: a 60s blocking wait here froze every
-    # other in-flight tool call (this runs on the request path).
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=60)
-    except TimeoutError:
-        proc.kill()
-        await proc.wait()
-        return _result(operation, False, "rasterize timed out after 60s", error="timeout", start=start)
-
-    if proc.returncode != 0 or not out_path.exists():
-        stderr_tail = (stderr_b or b"").decode("utf-8", errors="replace")[-1000:]
-        return _result(
-            operation,
-            False,
-            f"inkscape export failed (rc={proc.returncode}); stderr: {stderr_tail}",
-            data={"argv": cmd, "stderr": stderr_tail},
-            error="export failed",
-            start=start,
-        )
+    failure = await _run_png_export(cmd, out_path)
+    if failure:
+        return _result(operation, False, failure, data={"argv": cmd}, error="export failed", start=start)
 
     size = out_path.stat().st_size
     return _result(
@@ -1662,6 +1790,8 @@ async def inkscape_live(
             return await _op_inspect_element(bus, operation, target, start)
         if operation == "execute_inkex":
             return await _op_execute_inkex(bus, operation, payload, start)
+        if operation == "preview":
+            return await _op_preview(bus, operation, target, payload, config, start)
         if operation == "rasterize":
             return await _op_rasterize(bus, operation, target, payload, cli_wrapper, config, start)
         return _result(

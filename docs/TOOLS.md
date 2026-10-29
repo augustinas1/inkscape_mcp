@@ -149,7 +149,10 @@ operations. Highlights:
 - **Discovery:** `list_actions` (filtered).
 - **Extensions on live doc:** `execute_inkex`.
 - **Vision:** `rasterize` — render the doc / an element / an area to PNG so
-  the agent can see the result.
+  the agent can see the result. `area` is `x:y:w:h` in document units (mm for a mm document).
+- **Drafting:** `preview` — render a draft fragment in the live document's context (replacing
+  an element, or appended into a parent) without changing the document; returns after/before
+  PNGs framed on the draft. No undo step.
 
 Full payload shapes for each live op are in
 [`src/inkscape_mcp/reference/mcp-workflow.md`](../src/inkscape_mcp/reference/mcp-workflow.md).

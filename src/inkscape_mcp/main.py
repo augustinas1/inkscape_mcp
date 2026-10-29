@@ -684,10 +684,19 @@ class InkscapeMCPServer:
             (~2 KB for a typical figure). `target` = an id outlines just that subtree.
             Read it before get_document_xml when looking for an object.
 
+            `edit_xml` payload `{"ops": [...]}` applies many edits as ONE undo step,
+            all-or-nothing — prefer it whenever a change touches several elements.
+
+            `preview` renders a draft IN CONTEXT without touching the document: payload
+            `{"xml": "<g id=…>…</g>", "replace": "<id>"}` (or `"into": "<parent id>"`)
+            returns after/before PNGs framed on the draft. Iterate on shapes there and
+            insert only the version that works. `rasterize` `area` is "x:y:w:h" in
+            document units (same as outline).
+
             Operations: ping, get_document_xml, get_selection, set_selection, insert_svg,
             delete_selected, apply_action, list_actions, open_file, save_snapshot, changes, outline,
             edit_xml, path_edit, inspect_selection/layers/defs/view/pages/element,
-            execute_inkex, rasterize.
+            execute_inkex, rasterize, preview.
             """
             return await inkscape_live_tool(
                 operation=operation,
