@@ -93,6 +93,9 @@ designer would, one Inkscape operation at a time:
   Recipe in `mcp-workflow`.
 - **Give every meaningful element a stable `id`** as you create it. Ids are the handle
   for every later edit; unaddressable geometry has to be rebuilt instead of adjusted.
+  Also give it an `inkscape:label` in the user's words ("mRNA strand", "5' cap",
+  "transcription arrow"): labels show in the Objects dialog and in `outline`, so the
+  user's name for a thing and your id for it meet in one place.
 - **Work incrementally and keep it undoable.** Each call is one Inkscape undo entry, so
   the user can step back through your work and co-edit alongside you.
 
