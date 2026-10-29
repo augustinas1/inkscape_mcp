@@ -83,6 +83,33 @@ Actions inside the JSON payload: `append` · `insert_before` · `insert_after` �
 - Restructuring `<defs>` / `<metadata>` / Inkscape namespace blocks.
 - Setting attributes on elements that lack ids and don't match a clean CSS selector.
 
+### Arrows
+
+Draw an arrow as a `<path>` stroke with an Inkscape stock marker, exactly as Inkscape writes one
+when a marker is picked in Fill & Stroke. A `<line>` has no nodes for the node tool, and a
+hand-made `<marker>` is invisible to Fill & Stroke → Markers and keeps its own colour.
+
+```xml
+<!-- in <defs>: Inkscape 1.4 stock "Triangle arrow" (share/inkscape/markers/markers.svg) -->
+<marker style="overflow:visible" id="Triangle" refX="0" refY="0" orient="auto-start-reverse"
+        inkscape:stockid="Triangle arrow" markerWidth="1" markerHeight="1" viewBox="0 0 1 1"
+        inkscape:isstock="true" inkscape:collect="always" preserveAspectRatio="xMidYMid">
+  <path transform="scale(0.5)" d="M 5.77,0 -2.88,5 V -5 Z"
+        style="fill:context-stroke;fill-rule:evenodd;stroke:context-stroke;stroke-width:1pt"/>
+</marker>
+
+<!-- the arrow -->
+<path id="arrow-a-b" d="M 10,20 H 40"
+      style="fill:none;stroke:#333333;stroke-width:0.6;marker-end:url(#Triangle)"/>
+```
+
+- `context-stroke` makes the head take each arrow's stroke colour, so one marker serves every colour.
+- The head scales with `stroke-width` and is centred on the endpoint: its tip lands about 3×
+  stroke-width past it, so end the path that much short of the target.
+- **Add the marker after the paths that reference it.** `inkscape:collect="always"` makes
+  Inkscape delete an unreferenced marker on the next document update, so a marker appended
+  first silently disappears and the arrows render without heads.
+
 > **Undo guarantee:** `edit_xml` routes through an inkex extension under the hood. Inkscape records each call as one undoable command, labeled **"MCP: Edit"** in the undo history. Ctrl+Z reverses the edit cleanly.
 
 ## Save semantics

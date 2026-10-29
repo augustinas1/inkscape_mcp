@@ -86,6 +86,11 @@ designer would, one Inkscape operation at a time:
 - **Effects belong to Inkscape.** Filters, blurs, shadows, path effects and tracing go
   through `inkscape_extension` `run_live` (no params) or the LPE ops — not hand-authored
   filter primitives, unless the pitfalls doc tells you to.
+- **Draw arrows the way Inkscape does:** a `<path>` stroke whose `marker-end` is an
+  Inkscape stock marker (e.g. "Triangle arrow", `fill:context-stroke`,
+  `inkscape:isstock="true"`) — never `<line>` or a hand-made marker, which the node tool
+  and Fill & Stroke → Markers can't edit and whose head won't follow the stroke colour.
+  Recipe in `mcp-workflow`.
 - **Give every meaningful element a stable `id`** as you create it. Ids are the handle
   for every later edit; unaddressable geometry has to be rebuilt instead of adjusted.
 - **Work incrementally and keep it undoable.** Each call is one Inkscape undo entry, so
