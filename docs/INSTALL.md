@@ -105,6 +105,29 @@ claude mcp add inkscape_mcp -s user -- "$PWD/.venv/bin/inkscape_mcp"
 The live test tier launches its own Inkscape on macOS, so it is opt-in:
 `INKSCAPE_MCP_LIVE=1 .venv/bin/python -m pytest tests/live` (quit any Inkscape on the MCP bus first).
 
+## Keep Claude in sync with your edits (optional)
+
+Two Claude Code hooks let Claude see what you changed in Inkscape between messages, without
+being asked: when Claude finishes a turn the live document is fingerprinted, and when you send
+your next message the difference ("deleted `reactions`; moved `gene-off` by (0, 12)") is attached
+to it. Add to `~/.claude/settings.json`, pointing at the Python that has `inkscape_mcp` installed:
+
+```json
+{
+  "hooks": {
+    "Stop": [{ "hooks": [{ "type": "command", "timeout": 15,
+      "command": "/path/to/venv/bin/python -m inkscape_mcp.change_tracker hook-stop 2>/dev/null || true" }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "timeout": 15,
+      "command": "/path/to/venv/bin/python -m inkscape_mcp.change_tracker hook-prompt 2>/dev/null || true" }] }]
+  }
+}
+```
+
+Both stay silent when Inkscape isn't running or nothing changed, and never start Inkscape or the
+bus. Your selection is not included (reading it would add an undo step per message); Claude reads
+it on demand when you refer to it. Check by hand with
+`python -m inkscape_mcp.change_tracker report`.
+
 ## Override the Inkscape binary
 
 To pin a non-default Inkscape build:

@@ -136,6 +136,10 @@ operations. Highlights:
 - **Bridge:** `ping`.
 - **Selection:** `get_selection`, `set_selection`, `delete_selected`.
 - **Document:** `get_document_xml`, `open_file`, `save_snapshot`.
+- **Hand-off:** `changes` — what the user edited in Inkscape since the last check (added,
+  deleted, moved, restyled elements by id); re-baselines unless `payload` is `{"mark": false}`.
+  Reads an export snapshot, so it leaves no undo step. See INSTALL.md for the Claude Code hooks
+  that run it automatically.
 - **Editing:** `apply_action`, `insert_svg`, `edit_xml`, `path_edit`.
 - **Inspection:** `inspect_selection`, `inspect_layers`, `inspect_defs`, `inspect_view`, `inspect_pages`, `inspect_element`.
 - **Discovery:** `list_actions` (filtered).
