@@ -227,11 +227,14 @@ def _get_bus(config: Any = None) -> Any:
     return _BUS
 
 
-def _auto_launch_inkscape(config: Any) -> bool:
-    """Windows/macOS auto-manage: ensure a bus + a running Inkscape under it. Returns ready."""
+def _auto_launch_inkscape(config: Any, open_path: str | None = None) -> bool:
+    """Windows/macOS auto-manage: ensure a bus + a running Inkscape under it. Returns ready.
+
+    ``open_path`` (macOS only) is the document to launch onto instead of the default canvas.
+    """
     inkscape_exe = _resolve_inkscape_exe(config)
     if mac_bus_manager.is_macos():
-        return mac_bus_manager.ensure_inkscape(mac_bus_manager.ensure_bus(), inkscape_exe)
+        return mac_bus_manager.ensure_inkscape(mac_bus_manager.ensure_bus(), inkscape_exe, open_path=open_path)
     gdbus = bus_manager.find_gdbus(inkscape_exe)
     if not gdbus:
         raise RuntimeError("gdbus.exe not found (expected next to inkscape.exe or on PATH)")
@@ -1409,14 +1412,29 @@ async def inkscape_live(
 
     # Auto-manage (Windows/macOS): if the bridge isn't live yet, start the bus + Inkscape.
     if (bus_manager.is_windows() or mac_bus_manager.is_macos()) and not bus.is_available():
+        # macOS: when the triggering op is open_file, launch straight onto that file.
+        # Launching on the default canvas and then opening the file leaves two documents,
+        # which makes every window_id ambiguous — and macOS has no window-scope
+        # document-close to get rid of the stray canvas.
+        launch_path = None
+        if mac_bus_manager.is_macos() and operation == "open_file" and os.path.isabs(target) and os.path.isfile(target):
+            launch_path = target
         try:
-            _auto_launch_inkscape(config)
+            ready = _auto_launch_inkscape(config, open_path=launch_path)
         except Exception as exc:
             return _result(
                 operation,
                 False,
                 f"auto-launch of Inkscape failed: {exc}",
                 error=str(exc),
+                start=start,
+            )
+        if launch_path and ready:
+            return _result(
+                operation,
+                True,
+                f"launched Inkscape on {launch_path!r}",
+                data={"path": launch_path, "launched": True},
                 start=start,
             )
 

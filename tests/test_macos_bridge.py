@@ -215,3 +215,42 @@ def test_extensions_install_under_application_support_on_macos(monkeypatch):
 def test_extensions_install_under_xdg_on_linux(monkeypatch):
     monkeypatch.setattr(sys, "platform", "linux")
     assert extension_bridge._user_extensions_dir() == Path.home() / ".config/inkscape/extensions/inkscape_mcp"
+
+
+# ---- auto-launch ------------------------------------------------------------------
+
+
+@pytest.fixture
+def _down_mac_bridge(monkeypatch):
+    bus = _mac_bus()
+    bus.is_available.return_value = False
+    monkeypatch.setattr(live, "_get_bus", lambda config=None: bus)
+    monkeypatch.setattr(live.mac_bus_manager, "is_macos", lambda: True)
+    monkeypatch.setattr(live.bus_manager, "is_windows", lambda: False)
+    launches: list = []
+
+    def _launch(config, open_path=None):
+        launches.append(open_path)
+        bus.is_available.return_value = True
+        return True
+
+    monkeypatch.setattr(live, "_auto_launch_inkscape", _launch)
+    return bus, launches
+
+
+async def test_open_file_launches_straight_onto_the_file(_down_mac_bridge, tmp_path):
+    """Launching on the default canvas and then opening the file left two documents."""
+    bus, launches = _down_mac_bridge
+    doc = tmp_path / "fig.svg"
+    doc.write_text("<svg/>")
+    result = await live.inkscape_live("open_file", target=str(doc))
+    assert result["success"] is True
+    assert result["data"] == {"path": str(doc), "launched": True}
+    assert launches == [str(doc)]
+    bus.open_file.assert_not_called()
+
+
+async def test_other_ops_still_launch_the_default_canvas(_down_mac_bridge):
+    _, launches = _down_mac_bridge
+    await live.inkscape_live("delete_selected", window_id=0)
+    assert launches == [None]
