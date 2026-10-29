@@ -1405,6 +1405,25 @@ async def _op_changes(bus: InkscapeDBus, operation: str, payload: str, start: fl
     return _result(operation, True, message, data=result, start=start)
 
 
+async def _op_outline(bus: InkscapeDBus, operation: str, target: str, start: float) -> dict[str, Any]:
+    """Compact outline of the live document (or of the subtree with id `target`).
+
+    Reads an export snapshot, so — like ``changes`` — it leaves no undo entry.
+    """
+    from .. import figure_outline
+
+    _SCRATCH_DIR.mkdir(parents=True, exist_ok=True)
+    scratch = _SCRATCH_DIR / f"outline-{uuid.uuid4().hex}.svg"
+    try:
+        await _export_document_async(bus, scratch)
+        text = figure_outline.outline(scratch.read_bytes(), target.lstrip("#"))
+    except KeyError as exc:
+        return _result(operation, False, str(exc.args[0]), error="unknown id", start=start)
+    finally:
+        scratch.unlink(missing_ok=True)
+    return _result(operation, True, text, data={"outline": text}, start=start)
+
+
 async def _op_save_snapshot(bus: InkscapeDBus, operation: str, start: float) -> dict[str, Any]:
     scratch = _scratch_path()
     await _export_document_async(bus, scratch)
@@ -1549,6 +1568,8 @@ async def inkscape_live(
             return await _op_save_snapshot(bus, operation, start)
         if operation == "changes":
             return await _op_changes(bus, operation, payload, start)
+        if operation == "outline":
+            return await _op_outline(bus, operation, target, start)
         if operation == "edit_xml":
             return await _op_edit_xml(bus, operation, target, payload, window_id, start)
         if operation == "path_edit":

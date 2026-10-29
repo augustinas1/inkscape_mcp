@@ -676,8 +676,13 @@ class InkscapeMCPServer:
             rebuilding or replacing anything the user may have touched. `payload`
             `{"mark": false}` peeks without re-baselining.
 
+            `outline` is the cheap way to find things: one line per element — id, label,
+            kind, text, colours, bbox in user units — nested like the Objects dialog
+            (~2 KB for a typical figure). `target` = an id outlines just that subtree.
+            Read it before get_document_xml when looking for an object.
+
             Operations: ping, get_document_xml, get_selection, set_selection, insert_svg,
-            delete_selected, apply_action, list_actions, open_file, save_snapshot, changes,
+            delete_selected, apply_action, list_actions, open_file, save_snapshot, changes, outline,
             edit_xml, path_edit, inspect_selection/layers/defs/view/pages/element,
             execute_inkex, rasterize.
             """
