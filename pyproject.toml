@@ -132,7 +132,8 @@ select = ["E", "F", "W", "I", "B", "S", "UP", "RUF"]
 #   B008  — function call in default arg (pytest.fixture parametrize values)
 #   ARG*  — fixture args that exist to trigger setup but aren't referenced inside the test body
 #   E402  — late module-level imports for monkeypatched modules
-"tests/**" = ["S101", "S108", "S603", "S607", "B008", "ARG001", "ARG002", "ARG005", "E402"]
+#   S311  — seeded random.Random for reproducible generator tests (not crypto)
+"tests/**" = ["S101", "S108", "S311", "S603", "S607", "B008", "ARG001", "ARG002", "ARG005", "E402"]
 
 [tool.ruff.format]
 quote-style = "double"

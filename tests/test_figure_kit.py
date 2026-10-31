@@ -96,9 +96,9 @@ def test_protein_mirror_flips_the_fold(style):
 @pytest.mark.parametrize(
     ("kind", "params", "error"),
     [
-        ("teapot", {"id": "x"}, "unknown component"),
+        ("teapot", {"id": "x"}, "unknown generator"),
         ("arrow", {"x1": 0, "y1": 0, "x2": 1, "y2": 1}, "params.id is required"),
-        ("gene", {"id": "g", "x": 0, "y": 0, "colour": "red"}, "bad params for gene"),
+        ("gene", {"id": "g", "x": 0, "y": 0, "colour": "red"}, r"gene: unknown param\(s\) \[.colour.\]"),
     ],
 )
 def test_build_errors(style, kind, params, error):
@@ -167,7 +167,7 @@ async def test_style_kind_reports_tokens(live_doc, tmp_path):
 
 async def test_bad_component_is_reported(live_doc):
     res = await _component(kind="teapot", params={"id": "x"})
-    assert res["success"] is False and "unknown component" in res["message"]
+    assert res["success"] is False and "unknown generator" in res["message"]
 
 
 # ---- stale-server detection (ping) ---------------------------------------------------

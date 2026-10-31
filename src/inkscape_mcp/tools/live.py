@@ -1075,11 +1075,13 @@ async def _op_execute_inkex(
 async def _op_component(
     bus: InkscapeDBus, operation: str, target: str, payload: str, window_id: int, start: float
 ) -> dict[str, Any]:
-    """Build a pre-styled figure component (figure_kit) and optionally insert it.
+    """Run a registered generator (schematic parts, scatter, organic, flow, ...); optionally insert it.
 
     payload (JSON):
-      kind    — arrow | gene | rna_strand | protein | decay, or "style" to return the tokens
-      params  — the component's parameters, including a stable "id"
+      kind    — any registered generator (kind "catalogue" lists them with their parameters;
+                optional "category" filter), or "style" to return the tokens
+      params  — the generator's parameters, including a stable "id"
+      seed    — integer; the same seed always gives the same output (default 0)
       style   — path to a style.json overriding the default tokens (or $INKSCAPE_MCP_STYLE)
       into    — insert into this parent id;  replace — replace this id (defaults to `target`)
 
@@ -1087,6 +1089,7 @@ async def _op_component(
     one undo step; the stock arrow marker is added to <defs> if the fragment needs it.
     """
     from .. import figure_kit
+    from ..generators import registry
 
     try:
         args = json.loads(payload) if payload else {}
@@ -1101,8 +1104,15 @@ async def _op_component(
         return _result(
             operation, True, json.dumps(style, indent=1), data={"style": style, "path": style_path}, start=start
         )
+    if kind == "catalogue":
+        entries = registry.catalogue(args.get("category"))
+        lines = [f"{e['category']:>10}  {e['name']:<16} {e['doc']}" for e in entries]
+        return _result(operation, True, "\n".join(lines), data={"generators": entries}, start=start)
+    seed = args.get("seed")
+    if seed is not None and (isinstance(seed, bool) or not isinstance(seed, int)):
+        return _result(operation, False, f"seed must be an integer (got {seed!r})", error="bad seed", start=start)
     try:
-        xml = figure_kit.build(kind, args.get("params") or {}, style)
+        xml = registry.build(kind, args.get("params") or {}, style, seed)
     except ValueError as exc:
         return _result(operation, False, str(exc), error="bad component", start=start)
 

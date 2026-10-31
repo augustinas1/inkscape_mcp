@@ -22,6 +22,8 @@ from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape
 
+from .generators import registry
+
 DEFAULT_STYLE: dict[str, Any] = {
     "ink": "#333333",  # arrows, maths
     "muted": "#777777",  # secondary labels ("decay")
@@ -429,16 +431,20 @@ COMPONENTS: dict[str, Callable[..., str]] = {
     "decay": decay,
 }
 
+_CHOICES = {
+    "arrow": {"label_side": ["left", "right"]},
+    "gene": {"state": ["on", "off"]},
+    "decay": {"species": ["rna", "protein"]},
+}
+_RANGES: dict[str, dict[str, tuple[float, float]]] = {
+    "rna_strand": {"length": (2, 500), "waves": (0, 20), "amplitude": (0, 20)},
+    "protein": {"size": (0.1, 10)},
+    "gene": {"width": (10, 500), "height": (1, 100)},
+}
+for _name, _fn in COMPONENTS.items():
+    registry.register(_fn, "schematic", ranges=_RANGES.get(_name), choices=_CHOICES.get(_name))
+
 
 def build(kind: str, params: dict[str, Any], style: dict[str, Any]) -> str:
     """Build component `kind` from JSON-ish `params` (which must include `id`)."""
-    if kind not in COMPONENTS:
-        raise ValueError(f"unknown component {kind!r}; available: {sorted(COMPONENTS)}")
-    params = dict(params)
-    gid = params.pop("id", None)
-    if not gid:
-        raise ValueError("params.id is required (components need stable ids)")
-    try:
-        return COMPONENTS[kind](gid, style=style, **params)
-    except TypeError as exc:
-        raise ValueError(f"bad params for {kind}: {exc}") from exc
+    return registry.build(kind, params, style)
