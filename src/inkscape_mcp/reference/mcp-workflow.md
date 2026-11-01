@@ -119,6 +119,20 @@ document units (as `outline` reports), whichever group the result lands in. Colo
 
 Without `into`/`replace`/`apply.to` the fragment is returned — `preview` it, then insert.
 
+**Import an outside SVG** (a downloaded pattern, icon or drawing) into the house style:
+
+```
+inkscape_live(operation="component", payload='{"kind": "import_svg", "params": {"id": "bg",
+  "path": "/abs/pattern.svg", "x": 0, "y": 0, "width": 60, "recolor": "mono", "color": "ink"},
+  "into": "layer1"}')
+```
+
+It is sanitised (scripts, event handlers, foreignObject, external links, metadata removed), its
+ids are prefixed with the import's id, it is scaled to `width`, and `recolor` maps its colours:
+`mono` = tints of one colour by lightness (best for backgrounds), `palette` = nearest style
+colour, `none` = untouched. Combine with `apply` to clip it into a shape. Only use files the user
+is entitled to use; never store imported files in this repo.
+
 **Show the options visually:** `{"kind": "catalogue", "render": true}` (optional `category`)
 renders a contact sheet — every generator, three seeds or variants each, captioned with the call
 that reproduces the cell — and returns its PNG. Read it, or point the user at it, so choices can

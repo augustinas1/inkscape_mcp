@@ -156,7 +156,8 @@ operations. Highlights:
 - **Generators:** `component` — runs any registered, seeded, parametric generator
   (`{"kind": "catalogue"}` lists them): schematic parts (`arrow`, `gene`, `rna_strand`, `protein`,
   `decay`), scatter (Poisson-disc, jittered grid, clusters), organic (blob, folded chain, wobbly
-  line), flow (evenly spaced streamlines) and tiling. `apply` places the output freely, clipped
+  line), flow (evenly spaced streamlines), tiling (grids, Truchet, radial, isometric) and
+  `import_svg` (bring an outside SVG in, sanitised and recoloured to the style tokens). `apply` places the output freely, clipped
   inside a shape (live link), or as a seamless pattern fill. All built from shared style tokens. Override the tokens with a `style.json` (payload `style`, or
   `$INKSCAPE_MCP_STYLE`); `kind: "style"` returns the effective tokens. Returns the fragment, or
   inserts it (`into` / `replace`) as one undo step, adding the stock arrow marker if needed.

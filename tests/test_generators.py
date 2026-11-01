@@ -284,8 +284,9 @@ def test_catalogue_renders_every_generator_without_errors(style):
     svg = catalogue_mod.render(style)
     root = etree.fromstring(svg.encode())
     registry._load_all()
-    for name in registry.REGISTRY:
-        assert root.find(f".//*[@id='cat-{name}-0']") is not None, f"{name} missing from catalogue"
+    for name, gen in registry.REGISTRY.items():
+        shown = root.find(f".//*[@id='cat-{name}-0']") is not None
+        assert shown == (gen.category != "import"), f"{name}: in catalogue={shown}"  # imports need a file
     texts = " ".join("".join(t.itertext()) for t in root.iter(f"{{{SVG}}}text"))
     assert "no demo layout" not in texts and "must be" not in texts and "unknown" not in texts
 

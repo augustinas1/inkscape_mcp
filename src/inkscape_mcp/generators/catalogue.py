@@ -86,7 +86,8 @@ def render(style: dict[str, Any], category: str | None = None) -> str:
     """The catalogue as a standalone SVG document (mm units)."""
     registry._load_all()
     gens = sorted(
-        (g for g in registry.REGISTRY.values() if category in (None, g.category)), key=lambda g: (g.category, g.name)
+        (g for g in registry.REGISTRY.values() if category in (None, g.category) and g.category != "import"),
+        key=lambda g: (g.category, g.name),
     )
     width = GAP + 3 * (CELL_W + GAP)
     row_h = HEAD + CELL_H + 7
