@@ -157,7 +157,9 @@ operations. Highlights:
   (`{"kind": "catalogue"}` lists them): schematic parts (`arrow`, `gene`, `rna_strand`, `protein`,
   `decay`), scatter (Poisson-disc, jittered grid, clusters), organic (blob, folded chain, wobbly
   line), flow (evenly spaced streamlines), tiling (grids, Truchet, radial, isometric) and
-  `import_svg` (bring an outside SVG in, sanitised and recoloured to the style tokens). `apply` places the output freely, clipped
+  `import_svg` (bring an outside SVG in, sanitised and recoloured to the style tokens).
+  Browse them all in **[catalogue.html](catalogue.html)** (open it in a browser; regenerate with
+  `python -m inkscape_mcp.generators.catalogue docs/catalogue.html`). `apply` places the output freely, clipped
   inside a shape (live link), or as a seamless pattern fill. All built from shared style tokens. Override the tokens with a `style.json` (payload `style`, or
   `$INKSCAPE_MCP_STYLE`); `kind: "style"` returns the effective tokens. Returns the fragment, or
   inserts it (`into` / `replace`) as one undo step, adding the stock arrow marker if needed.

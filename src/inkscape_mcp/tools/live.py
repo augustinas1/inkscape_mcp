@@ -1080,7 +1080,8 @@ async def _op_component(
 
     payload (JSON):
       kind    — any registered generator (kind "catalogue" lists them with their parameters;
-                optional "category" filter; "render": true draws the visual contact sheet),
+                optional "category" filter; "render": true draws the visual contact sheet as PNG,
+                or with "format": "html" (+ optional absolute "path") a browsable page),
                 or "style" to return the tokens
       params  — the generator's parameters, including a stable "id"; coordinates are document
                 user units (as `outline` reports them), whatever group the result lands in
@@ -1118,6 +1119,12 @@ async def _op_component(
         from ..generators import catalogue
 
         _SCRATCH_DIR.mkdir(parents=True, exist_ok=True)
+        if args.get("format") == "html":
+            out = Path(str(args.get("path") or _SCRATCH_DIR / "catalogue.html")).expanduser()
+            if not out.is_absolute():
+                return _result(operation, False, "path must be absolute", error="relative path", start=start)
+            out.write_text(catalogue.render_html(style, args.get("category")), encoding="utf-8")
+            return _result(operation, True, f"catalogue page written to {out}", data={"html": str(out)}, start=start)
         sheet = _SCRATCH_DIR / f"catalogue-{uuid.uuid4().hex[:8]}.svg"
         svg = catalogue.render(style, args.get("category"))
         sheet.write_text(

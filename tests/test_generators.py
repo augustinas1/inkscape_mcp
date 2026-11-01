@@ -352,3 +352,20 @@ def test_hex_cells_sit_on_the_hex_grid(style):
         if 0 < x < 40 and 0 < y < 30
     ]
     assert inside and all(p in grid_pts for p in inside)
+
+
+def test_catalogue_html_page(style):
+    page = catalogue_mod.render_html(style)
+    assert page.startswith("<!doctype html>") and "<script" in page
+    assert "http://" not in page.replace("http://www.w3.org", "").replace("http://www.inkscape.org", "")
+    registry._load_all()
+    for name, gen in registry.REGISTRY.items():
+        assert (f'id="{name}"' in page) == (gen.category != "import"), name
+    assert 'data-copy="chain seed 2"' in page and 'data-copy="gene with state=&quot;off&quot;"' in page
+    assert "must be" not in page and "unknown generator" not in page
+
+
+async def test_catalogue_html_op(live_doc, tmp_path):
+    out = tmp_path / "cat.html"
+    res = await _component(kind="catalogue", render=True, format="html", path=str(out))
+    assert res["success"] is True and out.read_text().startswith("<!doctype html>")

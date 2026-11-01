@@ -5,7 +5,8 @@ parameter variants for the others — each captioned with the exact call that re
 so "flow_lines, seed 2" can be pointed at and asked for. New generators appear automatically
 (with a generic demo layout unless they need a custom one in DEMOS).
 
-    python -m inkscape_mcp.generators.catalogue out.svg [category]
+    python -m inkscape_mcp.generators.catalogue out.html [category]   # browsable page
+    python -m inkscape_mcp.generators.catalogue out.svg [category]    # contact sheet
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from __future__ import annotations
 import json
 import sys
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape
 
@@ -135,16 +137,161 @@ def render(style: dict[str, Any], category: str | None = None) -> str:
     )
 
 
+def _cell_svg(gen: registry.Generator, col: int, seed: int | None, extra: dict[str, Any], style: dict[str, Any],
+              marker: str) -> str:  # fmt: skip
+    """One catalogue cell as a small standalone inline <svg> (cell box at the origin)."""
+    base = _demo_params(gen, (0.0, 0.0, CELL_W, CELL_H))
+    try:
+        body = registry.build(gen.name, {"id": f"cat-{gen.name}-{col}", **(base or {}), **extra}, style, seed)
+    except ValueError as exc:
+        body = f'<text x="2" y="6" style="font-size:2.4px;fill:#c00">{escape(str(exc))}</text>'
+    return (
+        '<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" '
+        f'xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 {CELL_W:g} {CELL_H:g}" role="img" '
+        f'aria-label="{_attr(gen.name)} example {col + 1}"><defs>{marker}</defs>{body}</svg>'
+    )
+
+
+def _attr(text: str) -> str:
+    """Escape for a double-quoted HTML attribute (saxutils.escape leaves quotes alone)."""
+    return escape(text, {'"': "&quot;"})
+
+
+def _request(gen: registry.Generator, seed: int | None, extra: dict[str, Any]) -> str:
+    """What to type in chat to get this cell."""
+    if seed is not None:
+        return f"{gen.name} seed {seed}"
+    if not extra:
+        return f"{gen.name} (defaults)"
+    return f"{gen.name} with " + ", ".join(f"{k}={json.dumps(v, ensure_ascii=False)}" for k, v in extra.items())
+
+
+def _param_rows(gen: registry.Generator) -> str:
+    rows = []
+    for p in gen.params.values():
+        if p.kind == "choice" and p.choices:
+            kind = " | ".join(p.choices)
+        else:
+            kind = p.kind
+        if p.minimum is not None or p.maximum is not None:
+            kind += f" [{p.minimum:g}..{p.maximum:g}]" if p.minimum is not None and p.maximum is not None else ""
+        default = "required" if p.required else json.dumps(p.default, ensure_ascii=False)
+        rows.append(
+            f"<tr><td><code>{escape(p.name)}</code></td><td>{escape(kind)}</td>"
+            f"<td><code>{escape(default)}</code></td><td>{escape(p.doc)}</td></tr>"
+        )
+    return "".join(rows)
+
+
+_PAGE_CSS = """
+:root{--bg:#f6f6f4;--card:#ffffff;--ink:#222;--muted:#6b6b6b;--line:#e2e2de;--accent:#2b8a69}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}
+header{padding:28px 16px 8px;max-width:1080px;margin:0 auto}
+h1{font-size:24px;margin:0 0 6px}
+header p{margin:4px 0;color:var(--muted);max-width:760px}
+nav{position:sticky;top:0;z-index:2;background:var(--bg);border-bottom:1px solid var(--line)}
+nav .in{max-width:1080px;margin:0 auto;padding:10px 16px;display:flex;gap:8px;flex-wrap:wrap;
+  align-items:center}
+nav a{color:var(--ink);text-decoration:none;padding:3px 10px;border:1px solid var(--line);border-radius:14px;
+  background:var(--card)}
+nav input{margin-left:auto;padding:5px 10px;border:1px solid var(--line);border-radius:14px;min-width:200px;
+  font:inherit}
+main{max-width:1080px;margin:0 auto;padding:8px 16px 48px}
+h2{font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:30px 0 8px}
+.gen{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin:12px 0}
+.gen h3{margin:0;font-size:17px}.gen h3 code{font-size:17px}
+.gen .doc{margin:4px 0 12px;color:var(--muted)}
+.cells{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+figure{margin:0;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:#fff}
+figure svg{display:block;width:100%;height:auto}
+figcaption{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 8px;
+  border-top:1px solid var(--line);font:12px ui-monospace,Menlo,monospace;color:var(--muted)}
+button{font:12px -apple-system,Arial,sans-serif;border:1px solid var(--line);background:#fafafa;
+  border-radius:6px;padding:2px 8px;cursor:pointer;white-space:nowrap}
+button.done{background:var(--accent);color:#fff;border-color:var(--accent)}
+details{margin-top:12px}summary{cursor:pointer;color:var(--muted);font-size:13px}
+table{border-collapse:collapse;width:100%;margin-top:8px;font-size:13px}
+td{border-top:1px solid var(--line);padding:5px 8px;vertical-align:top}td:first-child{white-space:nowrap}
+.hidden{display:none}
+@media (max-width:720px){.cells{grid-template-columns:1fr}nav input{margin-left:0;width:100%}}
+"""
+
+_PAGE_JS = """
+document.querySelectorAll('button[data-copy]').forEach(b=>b.addEventListener('click',()=>{
+  navigator.clipboard.writeText(b.dataset.copy).then(()=>{b.textContent='copied';b.classList.add('done');
+  setTimeout(()=>{b.textContent='copy';b.classList.remove('done')},1200)})}));
+const q=document.getElementById('filter');
+q.addEventListener('input',()=>{const t=q.value.toLowerCase();
+  document.querySelectorAll('.gen').forEach(g=>g.classList.toggle('hidden',!g.dataset.search.includes(t)))});
+"""
+
+
+def render_html(style: dict[str, Any], category: str | None = None) -> str:
+    """The catalogue as one self-contained HTML page (inline SVG, no external resources)."""
+    from ..figure_kit import TRIANGLE_MARKER
+
+    registry._load_all()
+    gens = sorted(
+        (g for g in registry.REGISTRY.values() if category in (None, g.category) and g.category != "import"),
+        key=lambda g: (g.category, g.name),
+    )
+    categories = sorted({g.category for g in gens})
+    sections = []
+    for cat in categories:
+        blocks = []
+        for gen in (g for g in gens if g.category == cat):
+            figs = []
+            for col, (seed, extra, caption) in enumerate(cells(gen)):
+                request = _request(gen, seed, extra)
+                figs.append(
+                    f"<figure>{_cell_svg(gen, col, seed, extra, style, TRIANGLE_MARKER)}"
+                    f'<figcaption><span title="{_attr(request)}">{escape(caption)}</span>'
+                    f'<button data-copy="{_attr(request)}" title="copy a request to paste into chat">copy</button>'
+                    "</figcaption></figure>"
+                )
+            search = f"{gen.name} {gen.category} {gen.doc}".lower()
+            blocks.append(
+                f'<section class="gen" id="{_attr(gen.name)}" data-search="{_attr(search)}">'
+                f'<h3><code>{escape(gen.name)}</code></h3><p class="doc">{escape(gen.doc)}</p>'
+                f'<div class="cells">{"".join(figs)}</div>'
+                f"<details><summary>parameters</summary><table>{_param_rows(gen)}</table></details></section>"
+            )
+        sections.append(f'<h2 id="cat-{escape(cat)}">{escape(cat)}</h2>' + "".join(blocks))
+    nav = "".join(f'<a href="#cat-{escape(c)}">{escape(c)}</a>' for c in categories)
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Generator catalogue</title><style>{_PAGE_CSS}</style></head><body>
+<header><h1>Generator catalogue</h1>
+<p>Every generator the Inkscape MCP can draw, three seeds or variants each. To use one, press
+<b>copy</b> under an example and paste it into Claude with where it should go — e.g.
+<i>"chain seed 2 as a second protein at the bottom right"</i>. Add words like denser, paler or
+thinner to adjust it, or "clip it into the cell" / "use it as a pattern fill on the box".</p>
+<p>Colours and line weights come from your style tokens (<code>figures/style.json</code>);
+regenerate this page after changing them:
+<code>python -m inkscape_mcp.generators.catalogue docs/catalogue.html</code></p>
+</header>
+<nav><div class="in">{nav}
+<input id="filter" type="search" placeholder="filter generators" aria-label="filter generators"></div></nav>
+<main>{"".join(sections)}</main><script>{_PAGE_JS}</script></body></html>
+"""
+
+
 def main(argv: list[str]) -> int:
     from ..figure_kit import TRIANGLE_MARKER, load_style
 
     if not argv:
         print(__doc__)
         return 2
-    svg = render(load_style(), argv[1] if len(argv) > 1 else None)
-    svg = svg.replace("</svg>\n", f"<defs>{TRIANGLE_MARKER}</defs></svg>\n")
-    with open(argv[0], "w", encoding="utf-8") as fh:
-        fh.write(svg)
+    out, category = argv[0], (argv[1] if len(argv) > 1 else None)
+    style_path = next((p for p in ("figures/style.json",) if Path(p).is_file()), None)
+    style = load_style(style_path)
+    if out.lower().endswith((".html", ".htm")):
+        text = render_html(style, category)
+    else:
+        text = render(style, category).replace("</svg>\n", f"<defs>{TRIANGLE_MARKER}</defs></svg>\n")
+    Path(out).write_text(text, encoding="utf-8")
     return 0
 
 
