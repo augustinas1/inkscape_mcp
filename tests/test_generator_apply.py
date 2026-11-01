@@ -124,3 +124,22 @@ async def test_apply_errors(doc, payload, error):
     res = await _component(**payload)
     assert res["success"] is False and error in res["message"]
     assert doc["ops"] is None  # nothing was sent to Inkscape
+
+
+async def test_position_bottom_puts_output_behind_everything(doc):
+    res = await _component(kind="blob", params={"id": "bg", "cx": 40, "cy": 30}, into="layer1", position="bottom")
+    assert res["success"] is True and "at the bottom of #layer1" in res["message"]
+    layer = _find(doc, "layer1")
+    assert [c.get("id") for c in layer][:2] == ["bg", "cell"]
+    assert _find(doc, "bg").get("transform") == "translate(-5, -3)"  # still in document coordinates
+
+
+async def test_large_fragments_come_back_as_a_file(doc):
+    params = {"id": "big", "x": 0, "y": 0, "width": 150, "height": 60, "lattice": "hex", "spacing": 2}
+    res = await _component(kind="grid_lines", params=params, into="layer1")
+    assert res["success"] is True
+    data = res["data"]
+    assert "xml" not in data and data["xml_bytes"] > 8000
+    assert Path(data["xml_path"]).read_text().startswith('<g id="big"')
+    built = await _component(kind="grid_lines", params=params)  # not inserted: same rule
+    assert "xml" not in built["data"] and Path(built["data"]["xml_path"]).exists()

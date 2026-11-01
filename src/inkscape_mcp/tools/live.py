@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 import uuid
 from pathlib import Path
@@ -1086,6 +1087,7 @@ async def _op_component(
       seed    — integer; the same seed always gives the same output (default 0)
       style   — path to a style.json overriding the default tokens (or $INKSCAPE_MCP_STYLE)
       into    — insert into this parent id;  replace — replace this id (defaults to `target`)
+      position — with into: "top" (default, in front) or "bottom" (behind everything — backgrounds)
       apply   — how to use the output (default {"mode": "free"}):
                 {"mode": "clip", "to": "<shape id>"}  inside the shape, clipped by a live link to it;
                     region params default to the shape's bounding box
@@ -1207,7 +1209,7 @@ async def _op_component(
             operation,
             True,
             f"{kind} fragment built (not inserted) — preview it, or pass into/replace/apply.to to insert",
-            data={"xml": xml, "kind": kind},
+            data={**_xml_payload(xml, gid), "kind": kind},
             start=start,
         )
 
@@ -1249,8 +1251,16 @@ async def _op_component(
         )
         where = f"replacing #{replace_id}"
     else:
-        ops.append({"xpath": f"//*[@id='{into}']", "action": "append", "xml": _in_local_coords(doc_bytes, xml, into)})
-        where = f"into #{into}"
+        local = _in_local_coords(doc_bytes, xml, into)
+        parent = doc.find(f".//*[@id='{into}']")
+        first = next((c for c in parent if isinstance(c.tag, str)), None) if parent is not None else None
+        if args.get("position") == "bottom" and first is not None:
+            # Behind everything else in the parent (a background), in the same single undo step.
+            ops.append({"xpath": f"//*[@id='{into}']/*[1]", "action": "insert_before", "xml": local})
+            where = f"at the bottom of #{into}"
+        else:
+            ops.append({"xpath": f"//*[@id='{into}']", "action": "append", "xml": local})
+            where = f"into #{into}"
 
     marker = style["marker"]
     if f"url(#{marker})" in xml and marker == "Triangle" and doc.find(f".//*[@id='{marker}']") is None:
@@ -1260,8 +1270,21 @@ async def _op_component(
     result = await _op_edit_xml(bus, operation, "", json.dumps({"ops": ops}), window_id, start)
     if result.get("success"):
         result["message"] = f"{kind} inserted {where}; " + result["message"]
-        result["data"]["xml"] = xml
+        result["data"].update(_xml_payload(xml, gid))
     return result
+
+
+_INLINE_XML_LIMIT = 8000
+
+
+def _xml_payload(xml: str, gid: str) -> dict[str, Any]:
+    """The fragment inline when small; otherwise a file path (big generators make 100 KB+)."""
+    if len(xml) <= _INLINE_XML_LIMIT:
+        return {"xml": xml}
+    _SCRATCH_DIR.mkdir(parents=True, exist_ok=True)
+    path = _SCRATCH_DIR / f"component-{re.sub(r'[^A-Za-z0-9_-]', '_', gid)}-{uuid.uuid4().hex[:6]}.svg"
+    path.write_text(xml, encoding="utf-8")
+    return {"xml_path": str(path), "xml_bytes": len(xml), "xml_head": xml[:240]}
 
 
 def _defs_append_op(doc: Any, xml: str) -> dict[str, Any]:
@@ -1335,7 +1358,8 @@ async def _op_preview(
     """Render a draft in the live document's context WITHOUT changing the document.
 
     payload (JSON):
-      xml      — fragment to try (one or more elements); optional: without it, preview just
+      xml      — fragment to try (one or more elements), or xml_path to a file holding it (as
+                 component returns for large fragments); optional: without it, preview just
                  renders `focus` from the live document
       replace  — id of the element the draft would replace (defaults to `target`)
       into     — id of the parent to append the draft to when not replacing (default: the
@@ -1358,6 +1382,11 @@ async def _op_preview(
         return _result(operation, False, "payload must decode to a JSON object", error="bad payload", start=start)
 
     replace_id = str(args.get("replace") or target or "").lstrip("#")
+    if args.get("xml_path") and not args.get("xml"):
+        try:
+            args["xml"] = Path(str(args["xml_path"])).read_text(encoding="utf-8")
+        except OSError as exc:
+            return _result(operation, False, f"cannot read xml_path: {exc}", error="bad xml_path", start=start)
     frags = _fragment_children(str(args["xml"])) if args.get("xml") else []
     if args.get("xml") and not frags:
         return _result(operation, False, "xml did not parse to any element", error="bad xml", start=start)
