@@ -58,6 +58,73 @@ DEFAULT_STYLE: dict[str, Any] = {
         "label_size": 3.8,
     },
     "marker": "Triangle",
+    # Tokens for the motif generators (cells, annotation, plots, box genes).
+    "gene_box": {"on": "#2a7ab0", "off": "#9e9e9e", "line": "#333333", "text": "#ffffff"},
+    "cell": {
+        "fill": "#f5f5f5",
+        "stroke": "#b9b9b9",
+        "nucleus": "#e1e1e1",
+        "highlight": "#d8e6ef",
+        "highlight_nucleus": "#2a7ab0",
+    },
+    "panel": {"stroke": "#9aa5b1", "fill": "#ffffff", "title": "#222222", "weight": 0.5, "radius": 4.0},
+    "callout": {"color": "#9aa5b1", "fill": "#9aa5b1", "fill_opacity": 0.18, "weight": 0.5, "text": "#222222"},
+    "plot": {
+        "bars": "#b3d4ea",
+        "fit": "#d1495b",
+        "axis": "#333333",
+        "ridge": "#7a5aa8",
+        "series": ["#2a7ab0", "#d1495b", "#2b8a69", "#e0a030", "#7a5aa8", "#5a9fc0"],
+    },
+}
+
+# Named presets: overrides of DEFAULT_STYLE. "nature" is the default (muted, Nature-Reviews-like);
+# "reference" is the palette of the user's published figures (sky/cyan, coral, periwinkle).
+STYLE_PRESETS: dict[str, dict[str, Any]] = {
+    "nature": {},
+    "reference": {
+        "ink": "#1a1a1a",
+        "muted": "#808080",
+        "dna": "#1a1a1a",
+        "species": {
+            "rna": {"color": "#0098d1", "pale": "#8fd3ef"},
+            "protein": {"color": "#d6589f", "pale": "#eba9d0", "surface": "#fbe6f2"},
+        },
+        "gene": {
+            "on": {
+                "promoter": "#57c6ff",
+                "promoter_edge": "#2d98c3",
+                "body": "#c3ebfb",
+                "body_edge": "#7fd0f2",
+                "text": "#0a516e",
+            },
+            "off": {
+                "promoter": "#fd7b74",
+                "promoter_edge": "#e0575a",
+                "body": "#ffd6d3",
+                "body_edge": "#f5a19c",
+                "text": "#a93a45",
+            },
+        },
+        "gene_box": {"on": "#57c6ff", "off": "#fd7b74", "line": "#1a1a1a", "text": "#1a1a1a"},
+        "cell": {
+            "fill": "#f7f7f7",
+            "stroke": "#b2b2b2",
+            "nucleus": "#e3e3e3",
+            "highlight": "#f7cbe8",
+            "highlight_nucleus": "#e05fb0",
+        },
+        "panel": {"stroke": "#8f9bf5", "fill": "#ffffff", "title": "#000000", "weight": 0.7, "radius": 6.0},
+        "callout": {"color": "#8f9bf5", "fill": "#c9d1fb", "fill_opacity": 0.55, "weight": 0.7, "text": "#000000"},
+        "plot": {
+            "bars": "#a8dcf0",
+            "fit": "#fd6b6c",
+            "axis": "#000000",
+            "ridge": "#9b85c9",
+            "series": ["#3eafdd", "#fd6b6c", "#96b1fa", "#f9be73", "#6fd1d5", "#7550a6"],
+        },
+        "font": {"label": "Arial"},
+    },
 }
 
 # The stock "Triangle arrow" marker exactly as Inkscape writes it. Append it to <defs> AFTER
@@ -72,10 +139,26 @@ TRIANGLE_MARKER = (
 
 
 def load_style(path: str | Path | None = None) -> dict[str, Any]:
-    """DEFAULT_STYLE deep-merged with the JSON file at `path` (if given and present)."""
+    """The effective style: DEFAULT_STYLE, then a preset, then a JSON file's overrides.
+
+    `path` is a preset name ("nature", "reference") or a JSON file. A file may name a preset to
+    build on with "extends": {"extends": "reference", "species": {"rna": {"color": "#e05"}}}.
+    """
     style = copy.deepcopy(DEFAULT_STYLE)
-    if path and Path(path).is_file():
-        _merge(style, json.loads(Path(path).read_text()))
+    if path is None:
+        return style
+    if str(path) in STYLE_PRESETS:
+        _merge(style, copy.deepcopy(STYLE_PRESETS[str(path)]))
+        return style
+    if not Path(path).is_file():
+        raise ValueError(f"style {str(path)!r} is neither a preset {sorted(STYLE_PRESETS)} nor a file")
+    overrides = json.loads(Path(path).read_text())
+    base = overrides.pop("extends", None)
+    if base is not None:
+        if base not in STYLE_PRESETS:
+            raise ValueError(f"{path}: extends {base!r}, not a preset {sorted(STYLE_PRESETS)}")
+        _merge(style, copy.deepcopy(STYLE_PRESETS[base]))
+    _merge(style, overrides)
     return style
 
 
@@ -311,11 +394,29 @@ def _species_label(gid: str, x: float, y: float, name: str, symbol: str | None, 
 # A hand-tuned compact fold (unit coordinates around the centre): the chain enters at the
 # N-terminus, loops twice and crosses itself; points 13..17 pass OVER earlier strands.
 _FOLD = [
-    (-7.3, 4.7), (-5.4, 3.7), (-4.2, 1.7), (-5.2, -0.5), (-4.6, -2.7), (-2.4, -3.7),
-    (-0.8, -2.5), (-1.2, -0.3), (-0.2, 2.1), (2.0, 2.9), (4.0, 1.9), (4.4, -0.3),
-    (3.2, -2.5), (1.2, -3.3), (-0.6, -1.5), (-2.6, 0.1), (-3.6, 2.1), (-2.4, 3.9),
-    (0.0, 4.5), (2.8, 4.3), (5.0, 3.3), (6.2, 1.3),
-]  # fmt: skip
+    (-7.3, 4.7),
+    (-5.4, 3.7),
+    (-4.2, 1.7),
+    (-5.2, -0.5),
+    (-4.6, -2.7),
+    (-2.4, -3.7),
+    (-0.8, -2.5),
+    (-1.2, -0.3),
+    (-0.2, 2.1),
+    (2.0, 2.9),
+    (4.0, 1.9),
+    (4.4, -0.3),
+    (3.2, -2.5),
+    (1.2, -3.3),
+    (-0.6, -1.5),
+    (-2.6, 0.1),
+    (-3.6, 2.1),
+    (-2.4, 3.9),
+    (0.0, 4.5),
+    (2.8, 4.3),
+    (5.0, 3.3),
+    (6.2, 1.3),
+]
 _FOLD_OVER = (13, 17)
 
 

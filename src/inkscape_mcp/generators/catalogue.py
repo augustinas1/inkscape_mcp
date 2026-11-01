@@ -5,7 +5,7 @@ parameter variants for the others — each captioned with the exact call that re
 so "flow_lines, seed 2" can be pointed at and asked for. New generators appear automatically
 (with a generic demo layout unless they need a custom one in DEMOS).
 
-    python -m inkscape_mcp.generators.catalogue out.html [category]   # browsable page
+    python -m inkscape_mcp.generators.catalogue out.html [category] [--style reference|nature|FILE]
     python -m inkscape_mcp.generators.catalogue out.svg [category]    # contact sheet
 """
 
@@ -40,6 +40,26 @@ DEMOS: dict[str, Demo] = {
     "wobble_line": lambda b: {"x1": b[0] + 4, "y1": b[1] + b[3] / 2, "x2": b[0] + b[2] - 4, "y2": b[1] + b[3] / 2},
     "radial": lambda b: {"cx": b[0] + b[2] / 2, "cy": b[1] + b[3] / 2, "r_outer": b[3] / 2 - 2},
     "iso_box": lambda b: {"cx": b[0] + b[2] / 2, "cy": b[1] + b[3] - 7},
+    "gene_box": lambda b: {"x": b[0] + b[2] / 2 - 10, "y": b[1] + b[3] / 2 + 3},
+    "panel": lambda b: {"x": b[0] + 4, "y": b[1] + 4, "width": b[2] - 8, "height": b[3] - 8},
+    "label_pill": lambda b: {
+        "x": b[0] + b[2] * 0.62,
+        "y": b[1] + b[3] * 0.68,
+        "target_x": b[0] + b[2] * 0.25,
+        "target_y": b[1] + b[3] * 0.3,
+        "text": "Burst",
+    },
+    "zoom_callout": lambda b: {
+        "x1": b[0] + 12,
+        "y1": b[1] + b[3] * 0.65,
+        "r1": 4,
+        "x2": b[0] + b[2] - 15,
+        "y2": b[1] + b[3] / 2,
+        "r2": 11,
+    },
+    "hex_tissue": lambda b: {"x": b[0] + 3, "y": b[1] + 3, "width": b[2] - 6, "height": b[3] - 6, "highlight": 0.3},
+    "histogram_fit": lambda b: {"x": b[0] + 8, "y": b[1] + 4, "width": b[2] - 12, "height": b[3] - 12},
+    "ridge_plot": lambda b: {"x": b[0] + 6, "y": b[1] + 4, "width": b[2] - 12, "height": b[3] - 12},
 }
 # Unseeded generators show parameter variants instead of seeds.
 VARIANTS: dict[str, list[dict[str, Any]]] = {
@@ -51,6 +71,11 @@ VARIANTS: dict[str, list[dict[str, Any]]] = {
     "grid_lines": [{"lattice": "square"}, {"lattice": "triangle", "spacing": 6}, {"lattice": "hex", "spacing": 3}],
     "radial": [{"figure": "rings"}, {"figure": "spiral"}, {"figure": "polygons", "count": 5}],
     "iso_grid": [{}, {"spacing": 3}, {"verticals": False}],
+    "gene_box": [{"state": "on"}, {"state": "off", "sub": "off"}, {"state": "on", "promoter": False}],
+    "panel": [{"title": "Telegraph model"}, {"title": ""}, {"title": "Poisson", "fill": "#f4f5ff"}],
+    "label_pill": [{}, {"text": "Cell-cell interactions", "size": 3}, {"text": "Burst size", "side": "left"}],
+    "zoom_callout": [{}, {"r2": 8}, {"lens_fill": "#f7f7f7"}],
+    "ridge_plot": [{}, {"count": 8, "overlap": 1.6}, {"color": "plot.fit", "axes": False}],
     "hex_cells": [{"pick": "alternate", "spacing": 3}, {"pick": "spaced", "spacing": 3}, {"pick": "all", "spacing": 3}],
     "iso_box": [
         {},
@@ -284,9 +309,14 @@ def main(argv: list[str]) -> int:
     if not argv:
         print(__doc__)
         return 2
+    style_arg = None
+    if "--style" in argv:
+        i = argv.index("--style")
+        style_arg = argv[i + 1]
+        argv = argv[:i] + argv[i + 2 :]
     out, category = argv[0], (argv[1] if len(argv) > 1 else None)
-    style_path = next((p for p in ("figures/style.json",) if Path(p).is_file()), None)
-    style = load_style(style_path)
+    style_arg = style_arg or next((p for p in ("figures/style.json",) if Path(p).is_file()), None)
+    style = load_style(style_arg)
     if out.lower().endswith((".html", ".htm")):
         text = render_html(style, category)
     else:

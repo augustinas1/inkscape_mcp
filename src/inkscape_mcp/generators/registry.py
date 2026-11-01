@@ -26,6 +26,7 @@ _GENERATOR_MODULES = (
     "inkscape_mcp.generators.organic",
     "inkscape_mcp.generators.flow",
     "inkscape_mcp.generators.tiling",
+    "inkscape_mcp.generators.motifs",
     "inkscape_mcp.generators.importer",
 )
 
