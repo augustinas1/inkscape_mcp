@@ -533,3 +533,97 @@ def gene_box(
         f'fill:{tok["text"]}">{escape(symbol)}{sub_xml}</text>'
     )
     return c.group(gid, f"gene ({state})", "".join(parts))
+
+
+# ---- organic: space-filling protein ----------------------------------------------------
+
+
+def _shade(hex_color: str, factor: float) -> str:
+    """Darker (factor < 1) or lighter towards white (factor > 1) version of a colour."""
+    rgb = [int(hex_color[i : i + 2], 16) for i in (1, 3, 5)]
+    if factor <= 1:
+        out = [round(v * factor) for v in rgb]
+    else:
+        out = [round(v + (255 - v) * (factor - 1)) for v in rgb]
+    return "#" + "".join(f"{max(0, min(255, v)):02x}" for v in out)
+
+
+def _inside(p: Point, poly: list[Point]) -> bool:
+    x, y = p
+    inside = False
+    for (x1, y1), (x2, y2) in zip(poly, poly[1:] + poly[:1], strict=True):
+        if (y1 > y) != (y2 > y) and x < x1 + (y - y1) * (x2 - x1) / (y2 - y1):
+            inside = not inside
+    return inside
+
+
+@generator(
+    "organic",
+    ranges={"size": (0.5, 500), "bump": (0.08, 0.6), "lumpiness": (0, 0.4), "texture": (0, 1)},
+    docs={
+        "size": "overall radius",
+        "bump": "sphere size relative to the protein (smaller = finer, more atoms)",
+        "lumpiness": "how irregular the overall outline is",
+        "texture": "share of inner spheres drawn as faint lighter bumps",
+        "color": "fill colour (hex or token); the outline and texture are shades of it",
+    },
+)
+def protein_globule(
+    gid: str,
+    style: dict[str, Any],
+    rng: random.Random,
+    cx: float,
+    cy: float,
+    size: float = 7.0,
+    bump: float = 0.18,
+    lumpiness: float = 0.14,
+    texture: float = 0.45,
+    color: str = "species.protein.globule",
+    outline: float = 0.25,
+) -> str:
+    """Space-filling protein: a lumpy globule of overlapping spheres with one outline and soft texture."""
+    from . import common, organic, scatter
+
+    base = c.color(style, color)
+    dark, light, lighter = _shade(base, 0.72), _shade(base, 1.28), _shade(base, 1.5)
+    region = organic.blob_points(cx, cy, size, size * 0.86, lumpiness, rng)
+    r = size * bump
+    xs, ys = [p[0] for p in region], [p[1] for p in region]
+    pts = scatter.poisson_disc(max(xs) - min(xs), max(ys) - min(ys), r * 0.95, rng)
+    spheres = [
+        ((min(xs) + px, min(ys) + py), r * rng.uniform(0.8, 1.2))
+        for px, py in pts
+        if _inside((min(xs) + px, min(ys) + py), region)
+    ] or [((cx, cy), size * 0.9)]
+
+    def circles(items: list[tuple[Point, float]], grow: float = 0.0) -> str:
+        return " ".join(common.dot_path([p], rad + grow) for p, rad in items)
+
+    core = [(cx + (x - cx) * 0.78, cy + (y - cy) * 0.78) for x, y in region]
+    inner = [s for s in spheres if _inside(s[0], core)]
+    rng.shuffle(inner)
+    n_tex = round(len(inner) * texture)
+    highlights = [(p, rad * 0.85) for p, rad in inner[:n_tex] if p[1] - cy < (p[0] - cx) * 0.3 + size * 0.15]
+    shadows = [(p, rad * 0.8) for p, rad in inner[:n_tex] if (p, rad * 0.85) not in highlights][: max(1, n_tex // 3)]
+    fine = c.f(outline * 0.45)
+    parts = [
+        # Outline: every sphere, a little larger, in the dark shade — only the union's edge stays visible.
+        c.path(f"{gid}-outline", "outline", circles(spheres, outline), f"fill:{dark};stroke:none"),
+        # Core: a smooth fill under the spheres, so gaps between large spheres never show the outline.
+        # (Its own element: in one compound path its opposite winding would cancel the overlap.)
+        c.path(f"{gid}-core", "core", c.smooth_path(core, closed=True), f"fill:{base};stroke:none"),
+        c.path(f"{gid}-body", "body", circles(spheres), f"fill:{base};stroke:none"),
+        c.path(
+            f"{gid}-shading",
+            "surface shading",
+            circles(shadows),
+            f"fill:{_shade(base, 0.9)};fill-opacity:0.35;stroke:{dark};stroke-width:{fine};stroke-opacity:0.18",
+        ),
+        c.path(
+            f"{gid}-texture",
+            "surface texture",
+            circles(highlights),
+            f"fill:{light};fill-opacity:0.4;stroke:{lighter};stroke-width:{fine};stroke-opacity:0.45",
+        ),
+    ]
+    return c.group(gid, "protein (space-filling)", "".join(parts))

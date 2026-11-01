@@ -31,7 +31,7 @@ DEFAULT_STYLE: dict[str, Any] = {
     "species": {
         # one hue per species; "pale" = the opaque tint used for "less" (degraded, inactive)
         "rna": {"color": "#d1495b", "pale": "#df808c"},
-        "protein": {"color": "#2b8a69", "pale": "#5cb295", "surface": "#e4f4ed"},
+        "protein": {"color": "#2b8a69", "pale": "#5cb295", "surface": "#e4f4ed", "globule": "#7fc4a9"},
     },
     "gene": {
         "on": {
@@ -88,7 +88,7 @@ STYLE_PRESETS: dict[str, dict[str, Any]] = {
         "dna": "#1a1a1a",
         "species": {
             "rna": {"color": "#0098d1", "pale": "#8fd3ef"},
-            "protein": {"color": "#d6589f", "pale": "#eba9d0", "surface": "#fbe6f2"},
+            "protein": {"color": "#d6589f", "pale": "#eba9d0", "surface": "#fbe6f2", "globule": "#a7b9f2"},
         },
         "gene": {
             "on": {

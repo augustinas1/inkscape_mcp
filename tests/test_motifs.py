@@ -158,3 +158,22 @@ def test_box_gene_colours_by_state(style):
     assert style["gene_box"]["off"] in off.find(".//*[@id='g-box']").get("style")
     assert "marker-end:url(#Triangle)" in on.find(".//*[@id='g-promoter']").get("style")
     assert "font-family:Arial;font-style:italic" in on.find(".//*[@id='g-symbol']").get("style")
+
+
+def test_protein_globule_layers_and_seeds(style):
+    params = {"id": "pg", "cx": 50, "cy": 50, "size": 7}
+    group = _parse(registry.build("protein_globule", params, style, seed=1))
+    ids = [el.get("id") for el in group]
+    # outline under core under spheres, then texture: the outline only shows at the union's edge
+    assert ids == ["pg-outline", "pg-core", "pg-body", "pg-shading", "pg-texture"]
+    assert style["species"]["protein"]["globule"] in group.find(".//*[@id='pg-body']").get("style")
+    assert registry.build("protein_globule", params, style, seed=1) != registry.build(
+        "protein_globule", params, style, seed=2
+    )
+
+
+def test_protein_globule_stays_near_its_size(style):
+    group = _parse(registry.build("protein_globule", {"id": "pg", "cx": 0, "cy": 0, "size": 7}, style, seed=3))
+    nums = _nums(group.find(".//*[@id='pg-outline']").get("d"))
+    xs = nums[0::2]
+    assert -7 * 1.6 < min(xs) and max(xs) < 7 * 1.6  # lumps and outline, but no runaway spheres
