@@ -81,6 +81,38 @@ def _recolor_style(css: str, mode: str, palette: list[str], target: str) -> str:
     return ";".join(decls)
 
 
+_CSS_RULE = re.compile(r"([^{}]+)\{([^{}]*)\}")
+
+
+def scope_css(css: str, prefix: str, ids: set[str]) -> str:
+    """Confine a stylesheet to the imported content.
+
+    An imported <style> applies to the WHOLE host document — matplotlib's
+    `*{stroke-linecap:butt}` would restyle every line the user drew. Each selector is put under
+    `#prefix` (the import's own group) and `#id` references follow the prefixed ids. @-rules
+    other than @font-face are dropped (no @import of external sheets).
+    """
+    css = re.sub(r"@import[^;]*;", "", css)
+    out = []
+    for selectors, body in _CSS_RULE.findall(css):
+        sel = selectors.strip()
+        if sel.startswith("@"):
+            if sel.startswith("@font-face"):
+                out.append(f"{sel}{{{body}}}")
+            continue
+        scoped = []
+        for one in sel.split(","):
+            one = re.sub(
+                r"#([\w-]+)", lambda m: f"#{prefix}-{m.group(1)}" if m.group(1) in ids else m.group(0), one.strip()
+            )
+            if one in ("svg", ":root", "*|svg"):
+                scoped.append(f"#{prefix}")
+            else:
+                scoped.append(f"#{prefix} {one}")
+        out.append(f"{', '.join(scoped)}{{{body}}}")
+    return "\n".join(out)
+
+
 def sanitise_and_prefix(root: Any, prefix: str) -> None:
     """Strip active/foreign content and prefix every id (and the references to it) in place."""
     for el in list(root.iter()):
@@ -99,6 +131,8 @@ def sanitise_and_prefix(root: Any, prefix: str) -> None:
             elif local == "href" and not (value.startswith("#") or value.startswith("data:image/")):
                 del el.attrib[attr]  # no external or javascript: references
     ids = {el.get("id") for el in root.iter() if isinstance(el.tag, str) and el.get("id")}
+    for style_el in root.iter(f"{{{SVG}}}style"):
+        style_el.text = scope_css(style_el.text or "", prefix, ids)
     if not ids:
         return
     pattern = re.compile(
@@ -139,18 +173,7 @@ def import_svg(
 ) -> str:
     """Import an outside SVG: sanitised, ids prefixed, fitted to (x, y, width), recoloured to the style."""
     src = Path(path).expanduser()
-    if src.suffix.lower() != ".svg" or not src.is_file():
-        raise ValueError(f"import_svg.path must be an existing .svg file (got {path!r})")
-    if src.stat().st_size > _MAX_BYTES:
-        raise ValueError(f"{src.name} is larger than {_MAX_BYTES // 1_000_000} MB")
-    parser = etree.XMLParser(resolve_entities=False, no_network=True, huge_tree=False, remove_comments=True)
-    try:
-        root = etree.parse(str(src), parser).getroot()
-    except etree.XMLSyntaxError as exc:
-        raise ValueError(f"{src.name} is not well-formed SVG: {exc}") from exc
-    if _local(root.tag) != "svg":
-        raise ValueError(f"{src.name} has no <svg> root")
-
+    root = load_svg(src)
     vb = [float(v) for v in re.split(r"[\s,]+", (root.get("viewBox") or "").strip()) if v] or []
     if len(vb) != 4:
         w = _length(root.get("width"))
@@ -160,7 +183,38 @@ def import_svg(
         vb = [0.0, 0.0, w, h]
     if vb[2] <= 0 or vb[3] <= 0:
         raise ValueError(f"{src.name} has an empty viewBox")
+    return bring_in(root, (vb[0], vb[1], vb[2], vb[3]), gid, style, x, y, width, recolor, color, f"imported {src.name}")
 
+
+def load_svg(src: Path) -> Any:
+    """Parse an SVG file safely (no entities, no network, size-limited) and return its root."""
+    if src.suffix.lower() != ".svg" or not src.is_file():
+        raise ValueError(f"import_svg.path must be an existing .svg file (got {str(src)!r})")
+    if src.stat().st_size > _MAX_BYTES:
+        raise ValueError(f"{src.name} is larger than {_MAX_BYTES // 1_000_000} MB")
+    parser = etree.XMLParser(resolve_entities=False, no_network=True, huge_tree=False, remove_comments=True)
+    try:
+        root = etree.parse(str(src), parser).getroot()
+    except etree.XMLSyntaxError as exc:
+        raise ValueError(f"{src.name} is not well-formed SVG: {exc}") from exc
+    if _local(root.tag) != "svg":
+        raise ValueError(f"{src.name} has no <svg> root")
+    return root
+
+
+def bring_in(
+    root: Any,
+    view: tuple[float, float, float, float],
+    gid: str,
+    style: dict[str, Any],
+    x: float,
+    y: float,
+    width: float,
+    recolor: str,
+    color: str,
+    label: str,
+) -> str:
+    """Clean, prefix, recolour and fit the content of `root` (whose region `view` = x, y, w, h)."""
     from ..svg_cleanup import prune
 
     prune(root)  # leftover definitions and empty groups must not travel into the user's document
@@ -177,10 +231,10 @@ def import_svg(
             if el.get("style"):
                 el.set("style", _recolor_style(el.get("style"), recolor, palette, target))
 
-    scale = width / vb[2]
+    scale = width / view[2]
     body = "".join(etree.tostring(child, encoding="unicode") for child in root if isinstance(child.tag, str))
-    transform = f"translate({c.f(x)},{c.f(y)}) scale({c.f(scale)}) translate({c.f(-vb[0])},{c.f(-vb[1])})"
-    return c.group(gid, f"imported {src.name}", body, f' transform="{transform}"')
+    transform = f"translate({c.f(x)},{c.f(y)}) scale({c.f(scale)}) translate({c.f(-view[0])},{c.f(-view[1])})"
+    return c.group(gid, label, body, f' transform="{transform}"')
 
 
 def _length(value: str | None) -> float:

@@ -189,7 +189,7 @@ def label_pill(
 ) -> str:
     """Rounded 'pill' label with an elbowed leader line ending in a dot at the target."""
     tok = style["callout"]
-    w = max(size * 2.5, len(text) * size * 0.52 + size * 1.6)
+    w = max(size * 2.5, len(text) * size * 0.6 + size * 1.8)  # Arial averages ~0.55 em per character
     h = size * 1.9
     left = side == "left" or (side == "auto" and target_x < x)
     ex = x - w / 2 if left else x + w / 2

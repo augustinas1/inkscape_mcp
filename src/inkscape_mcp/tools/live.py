@@ -1123,7 +1123,8 @@ async def _op_component(
             out = Path(str(args.get("path") or _SCRATCH_DIR / "catalogue.html")).expanduser()
             if not out.is_absolute():
                 return _result(operation, False, "path must be absolute", error="relative path", start=start)
-            out.write_text(catalogue.render_html(style, args.get("category")), encoding="utf-8")
+            include_assets = bool(args.get("assets", True))  # the user's own library, when present
+            out.write_text(catalogue.render_html(style, args.get("category"), include_assets), encoding="utf-8")
             return _result(operation, True, f"catalogue page written to {out}", data={"html": str(out)}, start=start)
         sheet = _SCRATCH_DIR / f"catalogue-{uuid.uuid4().hex[:8]}.svg"
         svg = catalogue.render(style, args.get("category"))

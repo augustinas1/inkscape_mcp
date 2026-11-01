@@ -286,7 +286,9 @@ def test_catalogue_renders_every_generator_without_errors(style):
     registry._load_all()
     for name, gen in registry.REGISTRY.items():
         shown = root.find(f".//*[@id='cat-{name}-0']") is not None
-        assert shown == (gen.category != "import"), f"{name}: in catalogue={shown}"  # imports need a file
+        assert shown == (gen.category not in catalogue_mod._NOT_SHOWN), (
+            f"{name}: in catalogue={shown}"
+        )  # imports need a file
     texts = " ".join("".join(t.itertext()) for t in root.iter(f"{{{SVG}}}text"))
     assert "no demo layout" not in texts and "must be" not in texts and "unknown" not in texts
 
@@ -360,7 +362,7 @@ def test_catalogue_html_page(style):
     assert "http://" not in page.replace("http://www.w3.org", "").replace("http://www.inkscape.org", "")
     registry._load_all()
     for name, gen in registry.REGISTRY.items():
-        assert (f'id="{name}"' in page) == (gen.category != "import"), name
+        assert (f'id="{name}"' in page) == (gen.category not in catalogue_mod._NOT_SHOWN), name
     assert 'data-copy="chain seed 2"' in page and 'data-copy="gene with state=&quot;off&quot;"' in page
     assert "must be" not in page and "unknown generator" not in page
 

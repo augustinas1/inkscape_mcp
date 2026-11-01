@@ -145,6 +145,29 @@ ids are prefixed with the import's id, it is scaled to `width`, and `recolor` ma
 colour, `none` = untouched. Combine with `apply` to clip it into a shape. Only use files the user
 is entitled to use; never store imported files in this repo.
 
+**Style presets.** `style` takes a preset name — `"nature"` (default; muted, Nature-Reviews-like)
+or `"reference"` (the user's published palette: sky/cyan, coral, periwinkle) — or a style.json
+path; a style.json can build on a preset with `{"extends": "reference", ...overrides}`. Pick one
+per figure.
+
+**Motifs from the user's figures:** `hex_tissue` (cells with nuclei, seeded highlighted patch),
+`zoom_callout` (magnifier: put the detail inside with apply clip to `<id>-lens`), `panel`,
+`label_pill`, `trajectory_fan`, `histogram_fit`, `ridge_plot`, and `gene_box` (the compact
+box gene — the default gene; `gene` is the promoter + body version).
+
+**Asset library** (local, never committed): illustrations from the user's own figures in
+`reference_figures/` (or $INKSCAPE_MCP_ASSETS), indexed in its `assets.json`:
+
+```
+inkscape_live(operation="component", payload='{"kind": "asset",
+  "params": {"id": "ill", "name": "microscope", "x": 10, "y": 10, "width": 30, "height": 25},
+  "into": "layer1"}')
+```
+
+`element` takes one part of a figure by id. Re-index after adding files:
+`python -m inkscape_mcp.generators.assets index` (keeps curated entries; measures each asset's
+visible box with Inkscape, so clipped content does not shrink it).
+
 **Show the options visually:** `{"kind": "catalogue", "render": true}` (optional `category`)
 renders a contact sheet — every generator, three seeds or variants each, captioned with the call
 that reproduces the cell — and returns its PNG. Read it, or point the user at it, so choices can

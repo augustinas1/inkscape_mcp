@@ -5,7 +5,8 @@ parameter variants for the others — each captioned with the exact call that re
 so "flow_lines, seed 2" can be pointed at and asked for. New generators appear automatically
 (with a generic demo layout unless they need a custom one in DEMOS).
 
-    python -m inkscape_mcp.generators.catalogue out.html [category] [--style reference|nature|FILE]
+    python -m inkscape_mcp.generators.catalogue out.html [category] [--style reference|nature|FILE] [--assets]
+    (--assets adds the local asset library: keep such pages out of git, e.g. inside the library folder)
     python -m inkscape_mcp.generators.catalogue out.svg [category]    # contact sheet
 """
 
@@ -84,6 +85,9 @@ VARIANTS: dict[str, list[dict[str, Any]]] = {
     ],
 }
 SEEDS = (1, 2, 3)
+# Categories that need inputs a catalogue cell cannot invent (a file, a library entry); the asset
+# library gets its own section when requested.
+_NOT_SHOWN = {"import", "assets"}
 
 
 def _demo_params(gen: registry.Generator, box: Box) -> dict[str, Any] | None:
@@ -114,7 +118,7 @@ def render(style: dict[str, Any], category: str | None = None) -> str:
     """The catalogue as a standalone SVG document (mm units)."""
     registry._load_all()
     gens = sorted(
-        (g for g in registry.REGISTRY.values() if category in (None, g.category) and g.category != "import"),
+        (g for g in registry.REGISTRY.values() if category in (None, g.category) and g.category not in _NOT_SHOWN),
         key=lambda g: (g.category, g.name),
     )
     width = GAP + 3 * (CELL_W + GAP)
@@ -253,13 +257,51 @@ q.addEventListener('input',()=>{const t=q.value.toLowerCase();
 """
 
 
-def render_html(style: dict[str, Any], category: str | None = None) -> str:
+def _asset_section(style: dict[str, Any], marker: str) -> str:
+    """HTML for the local asset library (empty when there is none). Never part of committed docs."""
+    from . import assets
+
+    lib = assets.library_dir()
+    if lib is None:
+        return ""
+    figs = []
+    for name, entry in sorted(assets.load_index(lib).items()):
+        try:
+            body = registry.build(
+                "asset",
+                {"id": f"cat-asset-{name}", "name": name, "x": 2, "y": 2, "width": CELL_W - 4, "height": CELL_H - 4},
+                style,
+            )
+        except ValueError as exc:
+            body = f'<text x="2" y="6" style="font-size:2.4px;fill:#c00">{escape(str(exc))}</text>'
+        request = f"asset {name}"
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" '
+            f'xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 {CELL_W:g} {CELL_H:g}" role="img" '
+            f'aria-label="asset {_attr(name)}"><defs>{marker}</defs>{body}</svg>'
+        )
+        figs.append(
+            f'<figure>{svg}<figcaption><span title="{_attr(entry.get("label") or entry["file"])}">'
+            f'{escape(name)}</span><button data-copy="{_attr(request)}" '
+            'title="copy a request to paste into chat">copy</button></figcaption></figure>'
+        )
+    search = "assets " + " ".join(sorted(assets.load_index(lib)))
+    return (
+        '<h2 id="cat-assets">assets</h2>'
+        f'<section class="gen" id="assets" data-search="{_attr(search)}"><h3><code>asset</code></h3>'
+        f'<p class="doc">Illustrations from your own figures ({escape(str(lib))}; local, not in git). '
+        'Insert with e.g. <i>"asset NAME at the top left, 40 mm wide"</i>.</p>'
+        f'<div class="cells">{"".join(figs)}</div></section>'
+    )
+
+
+def render_html(style: dict[str, Any], category: str | None = None, include_assets: bool = False) -> str:
     """The catalogue as one self-contained HTML page (inline SVG, no external resources)."""
     from ..figure_kit import TRIANGLE_MARKER
 
     registry._load_all()
     gens = sorted(
-        (g for g in registry.REGISTRY.values() if category in (None, g.category) and g.category != "import"),
+        (g for g in registry.REGISTRY.values() if category in (None, g.category) and g.category not in _NOT_SHOWN),
         key=lambda g: (g.category, g.name),
     )
     categories = sorted({g.category for g in gens})
@@ -284,6 +326,10 @@ def render_html(style: dict[str, Any], category: str | None = None) -> str:
                 f"<details><summary>parameters</summary><table>{_param_rows(gen)}</table></details></section>"
             )
         sections.append(f'<h2 id="cat-{escape(cat)}">{escape(cat)}</h2>' + "".join(blocks))
+    asset_html = _asset_section(style, TRIANGLE_MARKER) if include_assets and category in (None, "assets") else ""
+    if asset_html:
+        sections.append(asset_html)
+        categories = [*categories, "assets"]
     nav = "".join(f'<a href="#cat-{escape(c)}">{escape(c)}</a>' for c in categories)
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -314,11 +360,13 @@ def main(argv: list[str]) -> int:
         i = argv.index("--style")
         style_arg = argv[i + 1]
         argv = argv[:i] + argv[i + 2 :]
+    include_assets = "--assets" in argv
+    argv = [a for a in argv if a != "--assets"]
     out, category = argv[0], (argv[1] if len(argv) > 1 else None)
     style_arg = style_arg or next((p for p in ("figures/style.json",) if Path(p).is_file()), None)
     style = load_style(style_arg)
     if out.lower().endswith((".html", ".htm")):
-        text = render_html(style, category)
+        text = render_html(style, category, include_assets)
     else:
         text = render(style, category).replace("</svg>\n", f"<defs>{TRIANGLE_MARKER}</defs></svg>\n")
     Path(out).write_text(text, encoding="utf-8")
