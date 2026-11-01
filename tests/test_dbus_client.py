@@ -5,15 +5,15 @@ from __future__ import annotations
 import pytest
 
 from inkscape_mcp.dbus_client import InkscapeDBus
-from tests._helpers import live_bus
+from tests._helpers import live_bus, live_tests_blocked
 
 
 @pytest.fixture(scope="module")
 def bus() -> InkscapeDBus:
-    b = live_bus()
-    if not b.is_available():
-        pytest.skip("Inkscape GUI not running — start it to exercise the live bridge")
-    return b
+    reason = live_tests_blocked()
+    if reason:
+        pytest.skip(reason)
+    return live_bus()
 
 
 def test_is_available(bus: InkscapeDBus) -> None:

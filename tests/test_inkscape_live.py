@@ -4,17 +4,15 @@ from __future__ import annotations
 
 import pytest
 
-from tests._helpers import live_bus
+from tests._helpers import live_bus, live_tests_blocked
 from tests._helpers import payload as _payload
 
 
 @pytest.fixture(scope="module", autouse=True)
 def _bridge_required():
-    if not live_bus().is_available():
-        pytest.skip(
-            "Inkscape GUI not running — start it to exercise live bridge tests",
-            allow_module_level=True,
-        )
+    reason = live_tests_blocked()
+    if reason:
+        pytest.skip(reason, allow_module_level=True)
 
 
 async def test_ping(mcp):
