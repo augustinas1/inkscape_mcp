@@ -108,10 +108,24 @@ inkscape_live(operation="component", payload='{"kind": "rna_strand",
   "params": {"id": "mrna2", "x": 104, "y": 82, "waves": 1.5}, "style": "/abs/figures/style.json"}')
 ```
 
-Kinds: `arrow` (x1, y1, x2, y2, symbol, sub, label_side), `gene` (x, y, state on/off),
-`rna_strand` (x, y, length, waves, amplitude, label, symbol), `protein` (cx, cy, size, mirror,
-label, symbol), `decay` (x, y, species rna/protein). Every part is a `<g>` with stable ids and
-`inkscape:label`s. Without `into`/`replace` the fragment is returned — `preview` it, then insert.
+`kind` is any registered generator — `{"kind": "catalogue"}` lists them all with their parameter
+schemas. Categories: **schematic** (`arrow`, `gene`, `rna_strand`, `protein`, `decay`),
+**scatter** (`scatter_even` Poisson-disc, `scatter_grid`, `scatter_clusters`), **organic**
+(`blob`, `chain` with over/under crossings, `wobble_line`), **flow** (`flow_lines`: swirl,
+vortex, waves, parallel, source), **tiling** (grids, Truchet, radial, isometric). Every part is a
+`<g>` with stable ids and `inkscape:label`s; `seed` makes variants reproducible. Coordinates are
+document units (as `outline` reports), whichever group the result lands in. Colours accept
+`#rrggbb` or a style-token path (`ink`, `species.rna.color`).
+
+Without `into`/`replace`/`apply.to` the fragment is returned — `preview` it, then insert.
+
+**Apply modes** (`apply`):
+
+- `{"mode": "clip", "to": "cell"}` — the output sits inside the shape, clipped by a live link to
+  it (reshape the shape and the texture follows); region params default to the shape's box.
+- `{"mode": "pattern", "tile": [12, 12], "to": "box"}` — rendered once into a seamless
+  `<pattern>` (scatters switch to periodic) and set as `box`'s fill, editable in Fill & Stroke.
+  Without `to` the pattern is just added to `<defs>`.
 
 ### Arrows
 

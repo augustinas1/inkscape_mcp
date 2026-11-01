@@ -693,12 +693,15 @@ class InkscapeMCPServer:
             insert only the version that works. `rasterize` `area` is "x:y:w:h" in
             document units (same as outline).
 
-            `component` builds pre-styled parts in the house schematic style — arrow, gene,
-            rna_strand, protein, decay — from shared style tokens (payload `style` = a
+            `component` runs seeded, parametric generators (kind "catalogue" lists them):
+            schematic parts (arrow, gene, rna_strand, protein, decay), scatter, organic (blob,
+            chain, wobble_line), flow (streamlines) and tiling, all from shared style tokens (payload `style` = a
             style.json path to override them; kind "style" lists them). Payload
             `{"kind": "rna_strand", "params": {"id": "m2", "x": 104, "y": 82}}` returns the
             fragment (preview it); add `"into": "<parent id>"` or `"replace": "<id>"` to insert
-            it as one undo step. Prefer components over hand-written geometry.
+            it as one undo step; `"apply": {"mode": "clip", "to": "<shape>"}` fills a shape
+            (live clip), `{"mode": "pattern", "tile": [w, h], "to": "<id>"}` makes a seamless
+            pattern fill. Prefer generators over hand-written geometry.
 
             Operations: ping, get_document_xml, get_selection, set_selection, insert_svg,
             delete_selected, apply_action, list_actions, open_file, save_snapshot, changes, outline,

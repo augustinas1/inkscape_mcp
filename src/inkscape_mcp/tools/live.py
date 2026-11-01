@@ -1080,15 +1080,22 @@ async def _op_component(
     payload (JSON):
       kind    — any registered generator (kind "catalogue" lists them with their parameters;
                 optional "category" filter), or "style" to return the tokens
-      params  — the generator's parameters, including a stable "id"
+      params  — the generator's parameters, including a stable "id"; coordinates are document
+                user units (as `outline` reports them), whatever group the result lands in
       seed    — integer; the same seed always gives the same output (default 0)
       style   — path to a style.json overriding the default tokens (or $INKSCAPE_MCP_STYLE)
       into    — insert into this parent id;  replace — replace this id (defaults to `target`)
+      apply   — how to use the output (default {"mode": "free"}):
+                {"mode": "clip", "to": "<shape id>"}  inside the shape, clipped by a live link to it;
+                    region params default to the shape's bounding box
+                {"mode": "pattern", "tile": [w, h], "to": "<id>"?}  as a seamless <pattern> fill
+                    (scatters switch to periodic); "to" sets it as that object's fill
 
-    Without into/replace it only returns the fragment (preview it, then insert). Inserting is
-    one undo step; the stock arrow marker is added to <defs> if the fragment needs it.
+    Without into/replace/apply-to it only returns the fragment (preview it, then insert).
+    Inserting is one undo step; the stock arrow marker is added if the fragment needs it.
     """
     from .. import figure_kit
+    from ..figure_outline import element_box
     from ..generators import registry
 
     try:
@@ -1111,52 +1118,171 @@ async def _op_component(
     seed = args.get("seed")
     if seed is not None and (isinstance(seed, bool) or not isinstance(seed, int)):
         return _result(operation, False, f"seed must be an integer (got {seed!r})", error="bad seed", start=start)
+
+    apply = args.get("apply") or {"mode": "free"}
+    mode = apply.get("mode", "free") if isinstance(apply, dict) else None
+    if mode not in ("free", "clip", "pattern"):
+        return _result(operation, False, "apply.mode must be free, clip or pattern", error="bad apply", start=start)
+    apply_to = str(apply.get("to") or "").lstrip("#")
+    replace_id = str(args.get("replace") or target or "").lstrip("#")
+    into = str(args.get("into") or "").lstrip("#")
+    params = dict(args.get("params") or {})
     try:
-        xml = registry.build(kind, args.get("params") or {}, style, seed)
+        gen = registry.get(kind)
     except ValueError as exc:
         return _result(operation, False, str(exc), error="bad component", start=start)
 
-    replace_id = str(args.get("replace") or target or "").lstrip("#")
-    into = str(args.get("into") or "").lstrip("#")
-    if not (replace_id or into):
+    if mode == "pattern":
+        tile = apply.get("tile")
+        if not (isinstance(tile, list) and len(tile) == 2 and all(isinstance(v, int | float) and v > 0 for v in tile)):
+            return _result(operation, False, "apply.tile must be [width, height] > 0", error="bad apply", start=start)
+        if not {"x", "y", "width", "height"} <= set(gen.params):
+            return _result(operation, False, f"{kind} has no region; it cannot tile", error="bad apply", start=start)
+        tile_w, tile_h = float(tile[0]), float(tile[1])
+        params.update({"x": 0, "y": 0, "width": tile_w, "height": tile_h})
+        if "periodic" in gen.params and "periodic" not in params:
+            params["periodic"] = True
+
+    needs_doc = bool(replace_id or into or apply_to or mode == "pattern")
+    doc_bytes = b""
+    if needs_doc:
+        _SCRATCH_DIR.mkdir(parents=True, exist_ok=True)
+        snapshot = _SCRATCH_DIR / f"component-{uuid.uuid4().hex[:8]}.svg"
+        try:
+            await _export_document_async(bus, snapshot)
+            doc_bytes = snapshot.read_bytes()
+        finally:
+            snapshot.unlink(missing_ok=True)
+        doc = etree.fromstring(doc_bytes, parser=etree.XMLParser(huge_tree=True))
+        for ref in (replace_id, into, apply_to):
+            if ref and doc.find(f".//*[@id='{ref}']") is None:
+                return _result(operation, False, f"no element with id {ref!r}", error="unknown id", start=start)
+
+    if mode == "clip":
+        if not apply_to:
+            return _result(
+                operation, False, "apply.to (the clipping shape's id) is required", error="bad apply", start=start
+            )
+        box = element_box(doc_bytes, apply_to)
+        if box and {"x", "y", "width", "height"} <= set(gen.params):
+            params.setdefault("x", box[0])
+            params.setdefault("y", box[1])
+            params.setdefault("width", box[2] - box[0])
+            params.setdefault("height", box[3] - box[1])
+        elif box and {"cx", "cy"} <= set(gen.params):
+            params.setdefault("cx", (box[0] + box[2]) / 2)
+            params.setdefault("cy", (box[1] + box[3]) / 2)
+
+    try:
+        xml = registry.build(kind, params, style, seed)
+    except ValueError as exc:
+        return _result(operation, False, str(exc), error="bad component", start=start)
+    gid = str(params.get("id"))
+
+    if not needs_doc:
         return _result(
             operation,
             True,
-            f"{kind} fragment built (not inserted) — preview it, or pass into/replace to insert",
+            f"{kind} fragment built (not inserted) — preview it, or pass into/replace/apply.to to insert",
             data={"xml": xml, "kind": kind},
             start=start,
         )
 
-    ops: list[dict[str, Any]] = [
-        {"xpath": f"//*[@id='{replace_id}']", "action": "replace", "xml": xml}
-        if replace_id
-        else {"xpath": f"//*[@id='{into}']", "action": "append", "xml": xml}
-    ]
+    ops: list[dict[str, Any]] = []
+    if mode == "pattern":
+        pattern = (
+            f'<pattern id="{gid}-pattern" inkscape:label="{kind} pattern" patternUnits="userSpaceOnUse" '
+            f'x="0" y="0" width="{tile_w:g}" height="{tile_h:g}">{xml}</pattern>'
+        )
+        ops.append(_defs_append_op(doc, pattern))
+        if apply_to:
+            ops.append(_fill_op(doc, apply_to, f"url(#{gid}-pattern)"))
+        where = f"as pattern #{gid}-pattern" + (f", filling #{apply_to}" if apply_to else "")
+    elif mode == "clip":
+        shape = doc.find(f".//*[@id='{apply_to}']")
+        inner = _in_local_coords(doc_bytes, xml, shape.getparent().get("id") if shape is not None else None)
+        clipped = (
+            f'<g id="{gid}-clipped" inkscape:label="{kind} (clipped to {apply_to})" '
+            f'clip-path="url(#{gid}-clip)">{inner}</g>'
+        )
+        ops.append({"xpath": f"//*[@id='{apply_to}']", "action": "insert_after", "xml": clipped})
+        ops.append(
+            _defs_append_op(
+                doc,
+                f'<clipPath id="{gid}-clip" clipPathUnits="userSpaceOnUse">'
+                f'<use xlink:href="#{apply_to}" href="#{apply_to}"/></clipPath>',
+            )
+        )
+        where = f"clipped to #{apply_to}"
+    elif replace_id:
+        old = doc.find(f".//*[@id='{replace_id}']")
+        parent_id = old.getparent().get("id") if old is not None and old.getparent() is not None else None
+        ops.append(
+            {
+                "xpath": f"//*[@id='{replace_id}']",
+                "action": "replace",
+                "xml": _in_local_coords(doc_bytes, xml, parent_id),
+            }
+        )
+        where = f"replacing #{replace_id}"
+    else:
+        ops.append({"xpath": f"//*[@id='{into}']", "action": "append", "xml": _in_local_coords(doc_bytes, xml, into)})
+        where = f"into #{into}"
+
     marker = style["marker"]
-    if f"url(#{marker})" in xml:
-        snapshot = _SCRATCH_DIR / f"component-{uuid.uuid4().hex[:8]}.svg"
-        _SCRATCH_DIR.mkdir(parents=True, exist_ok=True)
-        try:
-            await _export_document_async(bus, snapshot)
-            doc = etree.fromstring(snapshot.read_bytes(), parser=etree.XMLParser(huge_tree=True))
-        finally:
-            snapshot.unlink(missing_ok=True)
-        if doc.find(f".//*[@id='{marker}']") is None and marker == "Triangle":
-            # Appended AFTER the referencing paths: inkscape:collect="always" drops a marker
-            # that is unreferenced at the moment it lands.
-            if doc.find(f"{{{SVG_NS}}}defs") is not None:
-                ops.append({"xpath": "/svg:svg/svg:defs[1]", "action": "append", "xml": figure_kit.TRIANGLE_MARKER})
-            else:
-                ops.append(
-                    {"xpath": "/svg:svg", "action": "append", "xml": f"<defs>{figure_kit.TRIANGLE_MARKER}</defs>"}
-                )
+    if f"url(#{marker})" in xml and marker == "Triangle" and doc.find(f".//*[@id='{marker}']") is None:
+        # Appended AFTER the referencing paths: inkscape:collect="always" drops a marker
+        # that is unreferenced at the moment it lands.
+        ops.append(_defs_append_op(doc, figure_kit.TRIANGLE_MARKER))
     result = await _op_edit_xml(bus, operation, "", json.dumps({"ops": ops}), window_id, start)
     if result.get("success"):
-        result["message"] = (
-            f"{kind} inserted ({'replacing ' + replace_id if replace_id else 'into ' + into}); " + result["message"]
-        )
+        result["message"] = f"{kind} inserted {where}; " + result["message"]
         result["data"]["xml"] = xml
     return result
+
+
+def _defs_append_op(doc: Any, xml: str) -> dict[str, Any]:
+    """An edit op appending `xml` to the document's <defs> (creating <defs> if absent)."""
+    if doc.find(f"{{{SVG_NS}}}defs") is not None:
+        return {"xpath": "/svg:svg/svg:defs[1]", "action": "append", "xml": xml}
+    return {"xpath": "/svg:svg", "action": "append", "xml": f"<defs>{xml}</defs>"}
+
+
+def _fill_op(doc: Any, element_id: str, fill: str) -> dict[str, Any]:
+    """An edit op setting `element_id`'s fill in its style attribute, keeping the rest of its style."""
+    el = doc.find(f".//*[@id='{element_id}']")
+    decls = [d for d in (el.get("style") or "").split(";") if d.strip() and d.split(":")[0].strip() != "fill"]
+    return {
+        "xpath": f"//*[@id='{element_id}']",
+        "action": "set_attr",
+        "name": "style",
+        "value": ";".join([*decls, f"fill:{fill}"]),
+    }
+
+
+def _in_local_coords(doc_bytes: bytes, xml: str, parent_id: str | None) -> str:
+    """Give the fragment's root the inverse of its new parent's transform.
+
+    Generator coordinates are document user units (what `outline` reports); a parent group
+    with a transform would otherwise shift the inserted output.
+    """
+    import inkex
+
+    if not parent_id:
+        return xml
+    svg = inkex.load_svg(doc_bytes).getroot()
+    parent = svg.getElementById(parent_id)
+    if parent is None:
+        return xml
+    to_doc = parent.composed_transform()
+    if to_doc == inkex.Transform():
+        return xml
+    frags = _fragment_children(xml)
+    if len(frags) != 1:
+        return xml
+    root = frags[0]
+    root.set("transform", str(-to_doc))
+    return str(etree.tostring(root, encoding="unicode"))
 
 
 async def _run_png_export(cmd: list[str], out_path: Path) -> str:
