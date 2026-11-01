@@ -98,6 +98,18 @@ earlier ones. An op without `xpath` uses `target`.
 - Restructuring `<defs>` / `<metadata>` / Inkscape namespace blocks.
 - Setting attributes on elements that lack ids and don't match a clean CSS selector.
 
+### Leftover artefacts (unused definitions, empty groups)
+
+Documents accumulate definitions nothing uses (copy-paste between files is the usual source; a
+figure cropped from a master can carry thousands). Three places handle them, all with the same
+rules (svg_cleanup: keep what the drawing reaches through url(#…), href and path-effect chains):
+
+- live document: `inkscape_live(operation="cleanup")` — Inkscape's own "Clean up document" plus
+  empty-group removal; `payload='{"check": true}'` only reports;
+- files and folders: `python -m inkscape_mcp.svg_cleanup --verify --backup DIR PATH ...`
+  (`--verify` renders before/after and refuses to write a file whose rendering would change);
+- imports: `import_svg` always prunes what it brings in.
+
 ### Components and style tokens
 
 For schematic figures, build parts with `inkscape_live(operation="component")` instead of

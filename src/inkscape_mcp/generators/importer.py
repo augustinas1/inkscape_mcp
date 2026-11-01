@@ -1,7 +1,8 @@
 """Import an outside SVG (a downloaded pattern, icon, drawing) and bring it into the house style.
 
 The file is sanitised (scripts, event handlers, foreignObject, external references and editor
-metadata removed), its ids are prefixed so several imports can coexist, it is scaled to the
+metadata removed), pruned of leftover artefacts (unused definitions, empty groups — see
+svg_cleanup), its ids are prefixed so several imports can coexist, it is scaled to the
 requested width at the requested position, and its colours are optionally remapped onto the
 style tokens. Nothing is stored: the result is placed in the user's document only.
 """
@@ -160,6 +161,9 @@ def import_svg(
     if vb[2] <= 0 or vb[3] <= 0:
         raise ValueError(f"{src.name} has an empty viewBox")
 
+    from ..svg_cleanup import prune
+
+    prune(root)  # leftover definitions and empty groups must not travel into the user's document
     sanitise_and_prefix(root, gid)
     if recolor != "none":
         palette = _palette(style)

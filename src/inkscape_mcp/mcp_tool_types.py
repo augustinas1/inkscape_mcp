@@ -113,6 +113,7 @@ InkscapeLiveOperation = Literal[
     "save_snapshot",
     "changes",
     "outline",
+    "cleanup",
     "edit_xml",
     "path_edit",
     "inspect_selection",

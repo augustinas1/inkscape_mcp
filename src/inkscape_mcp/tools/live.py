@@ -1925,6 +1925,56 @@ async def _op_outline(bus: InkscapeDBus, operation: str, target: str, start: flo
     return _result(operation, True, text, data={"outline": text}, start=start)
 
 
+async def _op_cleanup(bus: InkscapeDBus, operation: str, payload: str, window_id: int, start: float) -> dict[str, Any]:
+    """Remove leftover artefacts from the live document: unused definitions and empty groups.
+
+    Unused <defs> go through Inkscape's own "Clean up document" (vacuum-defs); empty groups
+    are removed in one edit_xml batch. Counts come from snapshots before and after, using the
+    same rules as svg_cleanup. payload {"check": true} only reports.
+    """
+    from .. import svg_cleanup
+
+    check = False
+    if payload:
+        try:
+            check = bool(json.loads(payload).get("check", False))
+        except (ValueError, AttributeError) as exc:
+            return _result(operation, False, f"payload must be JSON like {{'check': true}}: {exc}", start=start)
+
+    async def survey() -> svg_cleanup.CleanupReport:
+        _SCRATCH_DIR.mkdir(parents=True, exist_ok=True)
+        snap = _SCRATCH_DIR / f"cleanup-{uuid.uuid4().hex[:8]}.svg"
+        try:
+            await _export_document_async(bus, snap)
+            root = etree.fromstring(snap.read_bytes(), parser=etree.XMLParser(huge_tree=True))
+        finally:
+            snap.unlink(missing_ok=True)
+        return svg_cleanup.prune(root)  # on the snapshot: measures what a cleanup would remove
+
+    report = await survey()
+    summary = f"{report.defs_removed} unused definition(s), {report.empty_groups_removed} empty group(s)"
+    if report.hidden_elements:
+        summary += f"; {report.hidden_elements} hidden element(s) left alone"
+    data = {k: v for k, v in vars(report).items() if k != "empty_group_ids"}
+    if check or not report.changed():
+        verb = "would remove" if report.changed() else "nothing to remove"
+        return _result(operation, True, f"cleanup check: {verb} — {summary}", data={"check": True, **data}, start=start)
+
+    if report.defs_removed:
+        bus.activate("vacuum-defs", None, scope="window", window_id=window_id)  # Inkscape's own, one undo step
+    if report.empty_group_ids:
+        ops = [{"xpath": f"//*[@id='{gid}']", "action": "remove"} for gid in report.empty_group_ids]
+        await _op_edit_xml(bus, operation, "", json.dumps({"ops": ops}), window_id, start)
+    after = await survey()
+    return _result(
+        operation,
+        True,
+        f"cleaned up: {summary} (unused definitions left that Inkscape keeps: {after.defs_removed})",
+        data={"removed": data, "remaining_unused_defs": after.defs_removed},
+        start=start,
+    )
+
+
 async def _op_save_snapshot(bus: InkscapeDBus, operation: str, start: float) -> dict[str, Any]:
     scratch = _scratch_path()
     await _export_document_async(bus, scratch)
@@ -2069,6 +2119,8 @@ async def inkscape_live(
             return await _op_save_snapshot(bus, operation, start)
         if operation == "changes":
             return await _op_changes(bus, operation, payload, start)
+        if operation == "cleanup":
+            return await _op_cleanup(bus, operation, payload, window_id, start)
         if operation == "outline":
             return await _op_outline(bus, operation, target, start)
         if operation == "edit_xml":
