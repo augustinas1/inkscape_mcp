@@ -16,7 +16,7 @@ from lxml import etree
 
 from inkscape_mcp import extension_bridge
 from inkscape_mcp.figure_kit import load_style
-from inkscape_mcp.generators import common, flow, organic, registry, scatter
+from inkscape_mcp.generators import common, flow, organic, registry, scatter, tiling
 from inkscape_mcp.tools import live
 
 SVG = "http://www.w3.org/2000/svg"
@@ -205,3 +205,72 @@ async def test_seed_is_passed_through(live_doc):
 async def test_bad_seed_rejected(live_doc):
     res = await _component(kind="chain", params={"id": "c", "cx": 0, "cy": 0}, seed="x")
     assert res["success"] is False and "seed must be an integer" in res["message"]
+
+
+# ---- tiling --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("p", "q", "expected"),
+    [
+        ((-5, 5), (15, 5), ((0, 5), (10, 5))),  # crosses both sides
+        ((2, 2), (8, 8), ((2, 2), (8, 8))),  # fully inside
+        ((-5, -5), (-1, 20), None),  # fully outside
+    ],
+)
+def test_clip_segment(p, q, expected):
+    got = tiling.clip_segment(p, q, 0, 0, 10, 10)
+    if expected is None:
+        assert got is None
+    else:
+        assert [v for pt in got for v in pt] == pytest.approx([v for pt in expected for v in pt])
+
+
+def _endpoints(d: str) -> list[tuple[float, float]]:
+    nums = _numbers(re.sub(r"A [^MLZ]*?(?= [ML]|$)", "", d))
+    return list(zip(nums[0::2], nums[1::2], strict=False))
+
+
+@pytest.mark.parametrize("lattice", ["square", "triangle", "hex"])
+def test_grid_lines_stay_in_region(style, lattice):
+    out = _parse(registry.build("grid_lines", {"id": "g", **REGION, "lattice": lattice, "angle": 17}, style))
+    pts = _endpoints(out.find(".//*[@id='g-lines']").get("d"))
+    assert len(pts) > 10
+    assert all(10 - 1e-6 <= x <= 70 + 1e-6 and 20 - 1e-6 <= y <= 60 + 1e-6 for x, y in pts)
+
+
+def test_square_grid_line_count(style):
+    out = _parse(
+        registry.build("grid_lines", {"id": "g", "x": 0, "y": 0, "width": 20, "height": 10, "spacing": 5}, style)
+    )
+    d = out.find(".//*[@id='g-lines']").get("d")
+    assert d.count("M ") == 3 + 5  # horizontals at y=0,5,10 and verticals at x=0..20 (centred family)
+
+
+@pytest.mark.parametrize("motif", ["arcs", "diagonals", "triangles"])
+def test_truchet_never_leaves_its_region(style, motif):
+    out = _parse(registry.build("truchet", {"id": "t", **REGION, "size": 7, "motif": motif}, style, seed=2))
+    d = out.find(".//*[@id='t-tiles']").get("d")
+    nums = _numbers(d.replace("A", " "))
+    xs = [v for v in nums if v > 9]  # coordinates (arc radii and flags are small numbers)
+    assert max(xs) <= 70 + 1e-6
+
+
+def test_truchet_seeds_differ(style):
+    a = registry.build("truchet", {"id": "t", **REGION}, style, seed=1)
+    assert a != registry.build("truchet", {"id": "t", **REGION}, style, seed=2)
+
+
+@pytest.mark.parametrize(("figure", "count"), [("rings", 4), ("rays", 12), ("polygons", 3)])
+def test_radial_counts(style, figure, count):
+    out = _parse(registry.build("radial", {"id": "r", "cx": 0, "cy": 0, "figure": figure, "count": count}, style))
+    d = out.find(".//*[@id='r-lines']").get("d")
+    assert d.count("M ") == count
+
+
+def test_iso_box_has_three_shaded_faces_above_its_corner(style):
+    out = _parse(registry.build("iso_box", {"id": "b", "cx": 50, "cy": 50, "color": "#2a7ab0"}, style))
+    fills = [out.find(f".//*[@id='b-{f}']").get("style").split(";")[0] for f in ("top", "left", "right")]
+    assert fills[2] == "fill:#2a7ab0" and len(set(fills)) == 3
+    ys = _numbers(" ".join(out.find(f".//*[@id='b-{f}']").get("d") for f in ("top", "left", "right")))[1::2]
+    assert max(ys) == pytest.approx(50)  # the front-bottom corner is the lowest point
