@@ -16,6 +16,7 @@ from lxml import etree
 
 from inkscape_mcp import extension_bridge
 from inkscape_mcp.figure_kit import load_style
+from inkscape_mcp.generators import catalogue as catalogue_mod
 from inkscape_mcp.generators import common, flow, organic, registry, scatter, tiling
 from inkscape_mcp.tools import live
 
@@ -274,3 +275,35 @@ def test_iso_box_has_three_shaded_faces_above_its_corner(style):
     assert fills[2] == "fill:#2a7ab0" and len(set(fills)) == 3
     ys = _numbers(" ".join(out.find(f".//*[@id='b-{f}']").get("d") for f in ("top", "left", "right")))[1::2]
     assert max(ys) == pytest.approx(50)  # the front-bottom corner is the lowest point
+
+
+# ---- catalogue -----------------------------------------------------------------------
+
+
+def test_catalogue_renders_every_generator_without_errors(style):
+    svg = catalogue_mod.render(style)
+    root = etree.fromstring(svg.encode())
+    registry._load_all()
+    for name in registry.REGISTRY:
+        assert root.find(f".//*[@id='cat-{name}-0']") is not None, f"{name} missing from catalogue"
+    texts = " ".join("".join(t.itertext()) for t in root.iter(f"{{{SVG}}}text"))
+    assert "no demo layout" not in texts and "must be" not in texts and "unknown" not in texts
+
+
+def test_catalogue_captions_reproduce_the_cells(style):
+    gen = registry.get("chain")
+    assert [cap for _, _, cap in catalogue_mod.cells(gen)] == ["seed 1", "seed 2", "seed 3"]
+    gene_caps = [cap for _, _, cap in catalogue_mod.cells(registry.get("gene"))]
+    assert gene_caps[1] == '{"state": "off"}'
+
+
+async def test_catalogue_render_op(live_doc, monkeypatch, tmp_path):
+    async def fake_export(cmd, out):
+        out.write_bytes(b"\x89PNG")
+        return ""
+
+    monkeypatch.setattr(live, "_run_png_export", fake_export)
+    res = await _component(kind="catalogue", render=True, category="tiling")
+    assert res["success"] is True
+    svg = Path(res["data"]["svg"]).read_text()
+    assert "cat-truchet-0" in svg and "cat-chain-0" not in svg and 'id="Triangle"' in svg

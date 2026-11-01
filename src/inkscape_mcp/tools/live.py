@@ -1079,7 +1079,8 @@ async def _op_component(
 
     payload (JSON):
       kind    — any registered generator (kind "catalogue" lists them with their parameters;
-                optional "category" filter), or "style" to return the tokens
+                optional "category" filter; "render": true draws the visual contact sheet),
+                or "style" to return the tokens
       params  — the generator's parameters, including a stable "id"; coordinates are document
                 user units (as `outline` reports them), whatever group the result lands in
       seed    — integer; the same seed always gives the same output (default 0)
@@ -1110,6 +1111,28 @@ async def _op_component(
     if kind == "style":
         return _result(
             operation, True, json.dumps(style, indent=1), data={"style": style, "path": style_path}, start=start
+        )
+    if kind == "catalogue" and args.get("render"):
+        from ..generators import catalogue
+
+        _SCRATCH_DIR.mkdir(parents=True, exist_ok=True)
+        sheet = _SCRATCH_DIR / f"catalogue-{uuid.uuid4().hex[:8]}.svg"
+        svg = catalogue.render(style, args.get("category"))
+        sheet.write_text(
+            svg.replace("</svg>\n", f"<defs>{figure_kit.TRIANGLE_MARKER}</defs></svg>\n"), encoding="utf-8"
+        )
+        png = sheet.with_suffix(".png")
+        cmd = [_resolve_inkscape_exe(None), "--export-type=png", f"--export-dpi={float(args.get('dpi', 120))}",
+               f"--export-filename={png}", str(sheet)]  # fmt: skip
+        failure = await _run_png_export(cmd, png)
+        if failure:
+            return _result(operation, False, failure, data={"svg": str(sheet)}, error="export failed", start=start)
+        return _result(
+            operation,
+            True,
+            f"catalogue rendered: {png} (SVG {sheet}) — each cell is captioned with the seed/params that reproduce it",
+            data={"png": str(png), "svg": str(sheet)},
+            start=start,
         )
     if kind == "catalogue":
         entries = registry.catalogue(args.get("category"))

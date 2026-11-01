@@ -119,6 +119,11 @@ document units (as `outline` reports), whichever group the result lands in. Colo
 
 Without `into`/`replace`/`apply.to` the fragment is returned — `preview` it, then insert.
 
+**Show the options visually:** `{"kind": "catalogue", "render": true}` (optional `category`)
+renders a contact sheet — every generator, three seeds or variants each, captioned with the call
+that reproduces the cell — and returns its PNG. Read it, or point the user at it, so choices can
+be made by look ("chain seed 2", "truchet seed 3").
+
 **Apply modes** (`apply`):
 
 - `{"mode": "clip", "to": "cell"}` — the output sits inside the shape, clipped by a live link to
