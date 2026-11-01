@@ -128,3 +128,28 @@ async def test_cleanup_vacuums_defs_and_removes_empty_groups(live_doc):
     bus.activate.assert_called_once_with("vacuum-defs", None, scope="window", window_id=1)
     ops = invoke.call_args.args[2]["ops"]
     assert [op["xpath"] for op in ops] == ["//*[@id='empty-outer']"]  # nested empties go with it
+
+
+def test_empty_text_and_the_defs_only_it_used_go_in_one_pass():
+    doc = f"""<svg xmlns="{SVG}" viewBox="0 0 10 10"><defs><rect id="flow-region" width="5" height="5"/></defs>
+      <text id="empty" style="shape-inside:url(#flow-region)"><tspan id="ts"/></text>
+      <text id="real">hi</text></svg>"""
+    root = etree.fromstring(doc.encode())
+    report = svg_cleanup.prune(root)
+    ids = {el.get("id") for el in root.iter() if el.get("id")}
+    assert ids == {"real"} and report.empty_text_removed == 1 and report.defs_removed == 1
+
+
+INKSCAPE = svg_cleanup.shutil.which("inkscape") or "/Applications/Inkscape.app/Contents/MacOS/inkscape"
+
+
+@pytest.mark.skipif(not Path(INKSCAPE).exists(), reason="needs the Inkscape CLI to render")
+def test_deep_removes_only_what_never_renders():
+    doc = f"""<svg xmlns="{SVG}" viewBox="0 0 100 100" width="100" height="100">
+      <defs><clipPath id="far"><rect x="500" y="500" width="1" height="1"/></clipPath></defs>
+      <g id="clipped-away" clip-path="url(#far)"><rect width="100" height="100" fill="#f00"/></g>
+      <rect id="visible" x="10" y="10" width="20" height="20" fill="#00f"/>
+      <rect id="tiny" x="50" y="50" width="0.5" height="0.5" fill="#000"/></svg>"""
+    out, removed = svg_cleanup.remove_invisible(doc.encode(), INKSCAPE)
+    ids = {el.get("id") for el in etree.fromstring(out).iter() if el.get("id")}
+    assert removed == 1 and "clipped-away" not in ids and {"visible", "tiny"} <= ids

@@ -11,7 +11,11 @@ travel along on import. This module keeps exactly what the visible drawing reach
 
 Command line (in place, with an optional backup and a render check)::
 
-    python -m inkscape_mcp.svg_cleanup [--check] [--backup DIR] [--verify] FILE_OR_DIR ...
+    python -m inkscape_mcp.svg_cleanup [--check] [--backup DIR] [--verify] [--deep] FILE_OR_DIR ...
+
+``--deep`` additionally removes top-level elements that are proven invisible: each is removed
+in turn and kept removed only if a high-resolution render does not change by a single pixel
+(e.g. content clipped away entirely).
 """
 
 from __future__ import annotations
@@ -62,15 +66,23 @@ class CleanupReport:
     empty_group_ids: list[str] = field(default_factory=list)  # outermost removed empty groups
     defs_kept: int = 0
     empty_groups_removed: int = 0
+    empty_text_removed: int = 0
+    invisible_removed: int = 0  # --deep only: top-level elements proven not to render
     hidden_elements: int = 0  # reported only: hidden layers/objects may be intentional
 
     def changed(self) -> bool:
-        return bool(self.defs_removed or self.empty_groups_removed)
+        return bool(self.defs_removed or self.empty_groups_removed or self.empty_text_removed or self.invisible_removed)
 
 
 def prune(root: Any) -> CleanupReport:
     """Prune unused definitions and empty groups from the tree under `root`, in place."""
     report = CleanupReport()
+    # Text with no characters renders nothing (template leftovers, abandoned text-tool clicks).
+    # Removed first, so definitions only they referenced (e.g. shape-inside rects) go too.
+    for el in list(root.iter(f"{{{SVG}}}text")):
+        if not _in_defs(el) and not "".join(el.itertext()).strip():
+            el.getparent().remove(el)
+            report.empty_text_removed += 1
     by_id = {el.get("id"): el for el in root.iter() if isinstance(el.tag, str) and el.get("id")}
 
     reachable: set[str] = set()
@@ -183,6 +195,64 @@ def renders_identically(before: bytes, after: bytes, inkscape: str) -> float | N
         return histogram[255] / (a.size[0] * a.size[1])
 
 
+def _candidates(root: Any) -> list[Any]:
+    """Top-level drawable elements: children of the root and of its layers (not defs/metadata)."""
+    skip = {"defs", "metadata", "namedview", "title", "desc", "style", "script"}
+    layers = [
+        el
+        for el in root
+        if _local(el.tag) == "g" and el.get("{http://www.inkscape.org/namespaces/inkscape}groupmode") == "layer"
+    ]
+    out = [el for el in root if isinstance(el.tag, str) and _local(el.tag) not in skip and el not in layers]
+    for layer in layers:
+        out.extend(el for el in layer if isinstance(el.tag, str) and _local(el.tag) not in skip)
+    return out[:60]
+
+
+def remove_invisible(data: bytes, inkscape: str) -> tuple[bytes, int]:
+    """Remove top-level elements whose removal changes not one pixel of a high-resolution render."""
+    from PIL import Image, ImageChops
+
+    parser = etree.XMLParser(huge_tree=True, resolve_entities=False, no_network=True)
+    removed = 0
+    with tempfile.TemporaryDirectory() as tmp:
+
+        def render(blob: bytes, name: str) -> Any:
+            svg, png = Path(tmp, f"{name}.svg"), Path(tmp, f"{name}.png")
+            svg.write_bytes(blob)
+            proc = subprocess.run(  # noqa: S603 — fixed argv, no shell
+                [
+                    inkscape,
+                    str(svg),
+                    "--export-type=png",
+                    "--export-width=1600",
+                    "--export-background=white",
+                    "--export-background-opacity=1",
+                    f"--export-filename={png}",
+                ],
+                capture_output=True,
+                timeout=120,
+                check=False,
+            )
+            return Image.open(png).convert("RGB") if proc.returncode == 0 and png.exists() else None
+
+        base = render(data, "base")
+        if base is None:
+            return data, 0
+        tree = etree.ElementTree(etree.fromstring(data, parser))
+        for el in _candidates(tree.getroot()):
+            parent = el.getparent()
+            index = parent.index(el)
+            parent.remove(el)
+            trial = render(etree.tostring(tree), "trial")
+            if trial is not None and trial.size == base.size and ImageChops.difference(base, trial).getbbox() is None:
+                removed += 1  # provably invisible: keep it removed
+            else:
+                parent.insert(index, el)
+        out = etree.tostring(tree, xml_declaration=True, encoding="UTF-8", standalone=False)
+    return out, removed
+
+
 def _files(paths: list[str]) -> list[Path]:
     out: list[Path] = []
     for p in map(Path, paths):
@@ -197,6 +267,9 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--backup", metavar="DIR", help="copy each original into DIR before rewriting it")
     ap.add_argument("--verify", action="store_true", help="render before/after and refuse visual changes")
     ap.add_argument(
+        "--deep", action="store_true", help="also remove top-level elements proven (by rendering) invisible"
+    )
+    ap.add_argument(
         "--inkscape", default=shutil.which("inkscape") or "/Applications/Inkscape.app/Contents/MacOS/inkscape"
     )
     args = ap.parse_args(argv)
@@ -205,9 +278,13 @@ def main(argv: list[str]) -> int:
     for path in _files(args.paths):
         before = path.read_bytes()
         after, report = clean_bytes(before)
+        if args.deep:
+            after, report.invisible_removed = remove_invisible(after, args.inkscape)
         line = (
             f"{path.name}: {report.defs_removed} unused defs, {report.empty_groups_removed} empty groups"
-            f" | {len(before) // 1024} -> {len(after) // 1024} KB"
+            + (f", {report.empty_text_removed} empty texts" if report.empty_text_removed else "")
+            + (f", {report.invisible_removed} invisible" if report.invisible_removed else "")
+            + f" | {len(before) // 1024} -> {len(after) // 1024} KB"
             + (f" | {report.hidden_elements} hidden (kept)" if report.hidden_elements else "")
         )
         if args.check or not report.changed():
