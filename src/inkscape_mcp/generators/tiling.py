@@ -300,3 +300,62 @@ def iso_box(
         + c.path(f"{gid}-right", "right face", right, f"fill:{base};{edge_css}")
     )
     return c.group(gid, "isometric block", body)
+
+
+def hex_centres(x: float, y: float, w: float, h: float, side: float) -> list[tuple[int, int, Point]]:
+    """(row, column, centre) of the pointy-top hexagons that grid_lines(lattice="hex") draws."""
+    cx, cy = x + w / 2, y + h / 2
+    col_w, row_h = side * math.sqrt(3), side * 1.5
+    out = []
+    for r in range(-int(h / 2 / row_h) - 2, int(h / 2 / row_h) + 3):
+        for k in range(-int(w / 2 / col_w) - 2, int(w / 2 / col_w) + 3):
+            out.append((r, k, (cx + k * col_w + (col_w / 2 if r % 2 else 0), cy + r * row_h)))
+    return out
+
+
+@generator(
+    "tiling",
+    choices={"pick": ["alternate", "spaced", "all"]},
+    ranges={"spacing": (0.2, 500)},
+    docs={
+        "spacing": "hexagon side — use the same value as the grid_lines(hex) it should fill",
+        "pick": "alternate = every other cell in each row (cells meet diagonally) | "
+        "spaced = one in three, no two filled cells touch | all",
+        "offset": "shift which cells are picked (0, 1 or 2)",
+    },
+)
+def hex_cells(
+    gid: str,
+    style: dict[str, Any],
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+    spacing: float = 5.0,
+    pick: str = "alternate",
+    offset: int = 0,
+    fill: str = "species.protein.surface",
+) -> str:
+    """Filled hexagons on the honeycomb grid_lines(lattice="hex") draws, clipped to the region."""
+    side = spacing
+    cells = []
+    for r, k, (hx, hy) in hex_centres(x, y, width, height, side):
+        if not (x - side <= hx <= x + width + side and y - side <= hy <= y + height + side):
+            continue
+        if pick == "alternate" and (k + offset) % 2:
+            continue
+        if pick == "spaced":
+            q = k - (r - (r & 1)) // 2  # offset rows -> axial coordinates
+            if (q - r + offset) % 3:
+                continue
+        corners = [
+            (hx + side * math.cos(math.radians(60 * i - 30)), hy + side * math.sin(math.radians(60 * i - 30)))
+            for i in range(6)
+        ]
+        cells.append("M " + " L ".join(f"{c.f(px)},{c.f(py)}" for px, py in corners) + " Z")
+    clip = (
+        f'<clipPath id="{gid}-clip" inkscape:label="region"><rect id="{gid}-clip-rect" inkscape:label="region" '
+        f'x="{c.f(x)}" y="{c.f(y)}" width="{c.f(width)}" height="{c.f(height)}"/></clipPath>'
+    )
+    body = clip + c.path(f"{gid}-cells", f"{pick} cells", " ".join(cells), f"fill:{c.color(style, fill)};stroke:none")
+    return c.group(gid, f"hexagon fill ({pick})", body, f' clip-path="url(#{gid}-clip)"')

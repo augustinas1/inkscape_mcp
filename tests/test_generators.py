@@ -308,3 +308,47 @@ async def test_catalogue_render_op(live_doc, monkeypatch, tmp_path):
     assert res["success"] is True
     svg = Path(res["data"]["svg"]).read_text()
     assert "cat-truchet-0" in svg and "cat-chain-0" not in svg and 'id="Triangle"' in svg
+
+
+# ---- hex_cells -----------------------------------------------------------------------
+
+
+def _hex_centres(d: str) -> list[tuple[float, float]]:
+    out = []
+    for poly in d.split("Z"):
+        nums = _numbers(poly)
+        if nums:
+            xs, ys = nums[0::2], nums[1::2]
+            out.append((sum(xs) / len(xs), sum(ys) / len(ys)))
+    return out
+
+
+@pytest.mark.parametrize(("pick", "touching"), [("spaced", False), ("all", True), ("alternate", True)])
+def test_hex_cells_touching_rules(style, pick, touching):
+    params = {"id": "h", "x": 0, "y": 0, "width": 40, "height": 30, "spacing": 3, "pick": pick}
+    centres = _hex_centres(_parse(registry.build("hex_cells", params, style)).find(".//*[@id='h-cells']").get("d"))
+    neighbour = 3 * math.sqrt(3)  # centre distance of edge-sharing hexagons
+    touch = any(abs(common.dist(a, b) - neighbour) < 0.01 for a, b in itertools.combinations(centres, 2))
+    assert touch is touching
+
+
+def test_hex_cells_alternate_skips_every_other_cell_in_a_row(style):
+    params = {"id": "h", "x": 0, "y": 0, "width": 40, "height": 30, "spacing": 3}
+    centres = _hex_centres(_parse(registry.build("hex_cells", params, style)).find(".//*[@id='h-cells']").get("d"))
+    row = sorted(x for x, y in centres if abs(y - 15) < 0.01)
+    gaps = [b - a for a, b in itertools.pairwise(row)]
+    assert len(gaps) > 2 and gaps == pytest.approx([2 * 3 * math.sqrt(3)] * len(gaps), abs=0.01)
+
+
+def test_hex_cells_sit_on_the_hex_grid(style):
+    region = {"x": 0, "y": 0, "width": 40, "height": 30, "spacing": 3}
+    grid = registry.build("grid_lines", {"id": "g", **region, "lattice": "hex"}, style)
+    grid_pts = {(round(x, 2), round(y, 2)) for x, y in _endpoints(_parse(grid).find(".//*[@id='g-lines']").get("d"))}
+    cells = _parse(registry.build("hex_cells", {"id": "h", **region, "pick": "all"}, style))
+    corners = _numbers(cells.find(".//*[@id='h-cells']").get("d"))
+    inside = [
+        (round(x, 2), round(y, 2))
+        for x, y in zip(corners[0::2], corners[1::2], strict=True)
+        if 0 < x < 40 and 0 < y < 30
+    ]
+    assert inside and all(p in grid_pts for p in inside)

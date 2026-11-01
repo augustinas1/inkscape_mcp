@@ -49,6 +49,7 @@ VARIANTS: dict[str, list[dict[str, Any]]] = {
     "grid_lines": [{"lattice": "square"}, {"lattice": "triangle", "spacing": 6}, {"lattice": "hex", "spacing": 3}],
     "radial": [{"figure": "rings"}, {"figure": "spiral"}, {"figure": "polygons", "count": 5}],
     "iso_grid": [{}, {"spacing": 3}, {"verticals": False}],
+    "hex_cells": [{"pick": "alternate", "spacing": 3}, {"pick": "spaced", "spacing": 3}, {"pick": "all", "spacing": 3}],
     "iso_box": [
         {},
         {"sx": 14, "sy": 8, "sz": 4, "color": "species.rna.color"},
