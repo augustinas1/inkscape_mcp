@@ -103,3 +103,16 @@ def page_vs_drawing_svg(tmp_path: Path) -> Path:
     dest = tmp_path / "page_vs_drawing.svg"
     shutil.copy(FIXTURES / "page_vs_drawing.svg", dest)
     return dest
+
+
+@pytest.fixture(autouse=True)
+def _private_inkscape_output(tmp_path, monkeypatch):
+    """Never touch the real output log, pid file, remembered paths or backups (tests use fake launches)."""
+    from inkscape_mcp import selection_probe
+
+    monkeypatch.setattr(selection_probe, "OUTPUT_LOG", tmp_path / "inkscape-output.log")
+    monkeypatch.setattr(selection_probe, "_PID_FILE", tmp_path / "inkscape-output.pid")
+    from inkscape_mcp.tools import live_figure
+
+    monkeypatch.setattr(live_figure, "DOC_PATHS", tmp_path / "doc-paths.json")
+    monkeypatch.setattr(live_figure, "BACKUP_DIR", tmp_path / "backups")

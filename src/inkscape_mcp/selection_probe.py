@@ -32,6 +32,8 @@ def capturing() -> bool:
     try:
         pid = int(_PID_FILE.read_text().strip())
         os.kill(pid, 0)
+    except PermissionError:
+        pass  # exists, but we may not signal it (e.g. from a sandbox)
     except (OSError, ValueError):
         return False
     return OUTPUT_LOG.exists()

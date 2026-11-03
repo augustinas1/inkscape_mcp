@@ -356,7 +356,9 @@ def _selection_note(svg_bytes: bytes) -> str:
         except Exception:  # a missing id is still named
             lines.append(i)
     more = f"\n… and {len(ids) - _MAX_SELECTION_LINES} more" if len(ids) > _MAX_SELECTION_LINES else ""
-    return "Selected in Inkscape now:\n" + "\n".join(lines) + more
+    root = etree.fromstring(svg_bytes, parser=etree.XMLParser(huge_tree=True, resolve_entities=False))
+    docname = root.get(f"{{{_SODI}}}docname", "")  # named, so hook gates can tell which figure
+    return f"Selected in Inkscape now, in {docname}:\n" + "\n".join(lines) + more
 
 
 def _hook_output(event: str, context: str) -> str:

@@ -57,7 +57,7 @@ def test_hook_prompt_names_the_selection(monkeypatch, capsys):
     monkeypatch.setattr(selection_probe, "selected_ids", lambda bus: ["body"])
     assert ct.main(["hook-prompt"]) == 0
     context = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
-    assert context.startswith("Selected in Inkscape now:\nbody  rect  x 41..69")
+    assert context.startswith("Selected in Inkscape now, in fig.svg:\nbody  rect  x 41..69")
 
 
 def test_fingerprint_skips_view_state_and_folds_text():
