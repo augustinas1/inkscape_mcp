@@ -548,6 +548,16 @@ def _shade(hex_color: str, factor: float) -> str:
     return "#" + "".join(f"{max(0, min(255, v)):02x}" for v in out)
 
 
+def _deepen(hex_color: str, amount: float) -> str:
+    """A deeper version of a colour: darker AND more saturated (shading that does not turn grey)."""
+    import colorsys
+
+    rgb = [int(hex_color[i : i + 2], 16) / 255 for i in (1, 3, 5)]
+    h, lightness, sat = colorsys.rgb_to_hls(*rgb)
+    out = colorsys.hls_to_rgb(h, lightness * (1 - 0.22 * amount), min(1.0, sat * (1 + 0.45 * amount)))
+    return "#" + "".join(f"{round(v * 255):02x}" for v in out)
+
+
 def _inside(p: Point, poly: list[Point]) -> bool:
     x, y = p
     inside = False
@@ -559,12 +569,13 @@ def _inside(p: Point, poly: list[Point]) -> bool:
 
 @generator(
     "organic",
-    ranges={"size": (0.5, 500), "bump": (0.08, 0.6), "lumpiness": (0, 0.4), "texture": (0, 1)},
+    ranges={"size": (0.5, 500), "bump": (0.08, 0.6), "lumpiness": (0, 0.4), "texture": (0, 1), "notches": (0, 6)},
     docs={
         "size": "overall radius",
         "bump": "sphere size relative to the protein (smaller = finer, more atoms)",
         "lumpiness": "how irregular the overall outline is",
-        "texture": "share of inner spheres drawn as faint lighter bumps",
+        "texture": "contrast of the surface: lighter domains and wider crevices between them",
+        "notches": "number of inward bays bitten out of the outline (0 = a rounder protein)",
         "color": "fill colour (hex or token); the outline and texture are shades of it",
     },
 )
@@ -575,17 +586,18 @@ def protein_globule(
     cx: float,
     cy: float,
     size: float = 7.0,
-    bump: float = 0.18,
-    lumpiness: float = 0.14,
-    texture: float = 0.45,
+    bump: float = 0.13,
+    lumpiness: float = 0.22,
+    texture: float = 0.6,
+    notches: int = 2,
     color: str = "species.protein.globule",
     outline: float = 0.25,
 ) -> str:
-    """Space-filling protein: a lumpy globule of overlapping spheres with one outline and soft texture."""
+    """Space-filling protein: a lumpy globule of spheres with soft lighter domains, darker crevices, one outline."""
     from . import common, organic, scatter
 
     base = c.color(style, color)
-    dark, light, lighter = _shade(base, 0.72), _shade(base, 1.28), _shade(base, 1.5)
+    dark = _deepen(_shade(base, 0.62), 0.3)  # outline: a deep shade of the same hue, not grey
     region = organic.blob_points(cx, cy, size, size * 0.86, lumpiness, rng)
     r = size * bump
     xs, ys = [p[0] for p in region], [p[1] for p in region]
@@ -595,35 +607,97 @@ def protein_globule(
         for px, py in pts
         if _inside((min(xs) + px, min(ys) + py), region)
     ] or [((cx, cy), size * 0.9)]
+    # Bays: bite a few seeded notches out of the outline, so the silhouette is not a rounded blob.
+    for _ in range(notches):
+        edge = region[rng.randrange(len(region))]
+        bite_r = size * rng.uniform(0.22, 0.38)
+        bite = (edge[0] + (edge[0] - cx) * 0.05, edge[1] + (edge[1] - cy) * 0.05)
+        kept = [sph for sph in spheres if common.dist(sph[0], bite) > bite_r]
+        if len(kept) > len(spheres) * 0.75:
+            spheres = kept
+            region = [
+                q if common.dist(q, bite) > bite_r else (cx + (q[0] - cx) * 0.7, cy + (q[1] - cy) * 0.7) for q in region
+            ]
 
     def circles(items: list[tuple[Point, float]], grow: float = 0.0) -> str:
         return " ".join(common.dot_path([p], rad + grow) for p, rad in items)
 
     core = [(cx + (x - cx) * 0.78, cy + (y - cy) * 0.78) for x, y in region]
-    inner = [s for s in spheres if _inside(s[0], core)]
-    rng.shuffle(inner)
-    n_tex = round(len(inner) * texture)
-    highlights = [(p, rad * 0.85) for p, rad in inner[:n_tex] if p[1] - cy < (p[0] - cx) * 0.3 + size * 0.15]
-    shadows = [(p, rad * 0.8) for p, rad in inner[:n_tex] if (p, rad * 0.85) not in highlights][: max(1, n_tex // 3)]
-    fine = c.f(outline * 0.45)
+
+    # Domains: spheres grouped around a few evenly spread lobe centres. Each lobe is drawn as one
+    # merged, slightly shrunk, soft-edged shape in a light tone; the darker base shows between
+    # lobes as crevices, and an omitted lobe reads as a recessed pocket.
+    centres = [
+        (min(xs) + px, min(ys) + py)
+        for px, py in scatter.poisson_disc(max(xs) - min(xs), max(ys) - min(ys), size * 0.42, rng)
+        if _inside((min(xs) + px, min(ys) + py), core)
+    ] or [(cx, cy)]
+    # Weighted assignment (a power diagram): heavier centres claim more spheres, so domains come
+    # out in varied sizes and some elongated, as in a real surface, not as equal cells.
+    weights = [rng.uniform(0.0, 0.3 * size) for _ in centres]
+    lobes: dict[int, list[tuple[Point, float]]] = {}
+    for sphere in spheres:
+        k = min(range(len(centres)), key=lambda i: common.dist(sphere[0], centres[i]) - weights[i])
+        lobes.setdefault(k, []).append(sphere)
+    occupied = sorted(lobes)
+    n_pockets = min(2, len(occupied) // 6) if len(occupied) > 3 else 0
+    if len(occupied) > 3 and rng.random() < 0.7:
+        n_pockets = max(1, n_pockets)
+    # Pockets are small recesses: chosen among the smaller domains, never a large one.
+    # Prefer the shaded (lower-right) side, where a recess reads naturally under top-left light.
+    small = sorted(occupied, key=lambda k: len(lobes[k]))[: max(1, len(occupied) // 2)]
+    shaded = [k for k in small if (centres[k][0] - cx) + (centres[k][1] - cy) > 0]
+    small = shaded or small
+    pockets = set(rng.sample(small, min(n_pockets, len(small)))) if n_pockets else set()
+    rim = r * (0.08 + 0.12 * texture)  # width of the darker rim where a domain overlaps its neighbours
+    lobe_paths = []
+    # Back to front: shaded (lower-right) domains first, so lit domains overlap them like a surface.
+    order = sorted(
+        (k for k in lobes if k not in pockets),
+        key=lambda k: (centres[k][0] - cx) + (centres[k][1] - cy),
+        reverse=True,
+    )
+    for k in order:
+        members = [(p, rad * 0.92) for p, rad in lobes[k]]  # still overlapping: a solid lobe
+        # Light from the upper left: domains there are lighter, towards the lower right deeper.
+        ux, uy = (centres[k][0] - cx) / size, (centres[k][1] - cy) / size
+        lit = max(-1.0, min(1.0, -(ux + uy) / 1.4))
+        tone = _shade(base, 1.1 + 0.4 * texture * lit + rng.uniform(-0.05, 0.05))
+        lobe_paths.append(
+            c.path(
+                f"{gid}-lobe{k}-rim",
+                f"domain {k + 1} rim",
+                circles(members, rim),
+                f"fill:{_deepen(base, 0.2)};fill-opacity:{c.f(0.35 + 0.4 * texture)};stroke:none;"
+                f"filter:url(#{gid}-soft)",
+            )
+        )
+        lobe_paths.append(
+            c.path(
+                f"{gid}-lobe{k}",
+                f"domain {k + 1}",
+                circles(members),  # edges are the spheres' own arcs: bulgy, like the reference
+                f"fill:{tone};stroke:none;filter:url(#{gid}-soft)",
+            )
+        )
+    xlink = "http://www.w3.org/1999/xlink"
+    defs = (
+        f'<defs id="{gid}-defs">'
+        f'<filter id="{gid}-soft" inkscape:label="domain edge: soften" '
+        'x="-0.25" y="-0.25" width="1.5" height="1.5" '
+        f'inkscape:auto-region="false" style="color-interpolation-filters:sRGB">'
+        f'<feGaussianBlur id="{gid}-soft-blur" stdDeviation="{c.f(r * 0.07)}"/></filter>'
+        f'<clipPath id="{gid}-clip" inkscape:label="body clip"><use xmlns:xlink="{xlink}" xlink:href="#{gid}-core"/>'
+        f'<use xmlns:xlink="{xlink}" xlink:href="#{gid}-body"/></clipPath></defs>'
+    )
     parts = [
+        defs,
         # Outline: every sphere, a little larger, in the dark shade — only the union's edge stays visible.
         c.path(f"{gid}-outline", "outline", circles(spheres, outline), f"fill:{dark};stroke:none"),
-        # Core: a smooth fill under the spheres, so gaps between large spheres never show the outline.
-        # (Its own element: in one compound path its opposite winding would cancel the overlap.)
-        c.path(f"{gid}-core", "core", c.smooth_path(core, closed=True), f"fill:{base};stroke:none"),
-        c.path(f"{gid}-body", "body", circles(spheres), f"fill:{base};stroke:none"),
-        c.path(
-            f"{gid}-shading",
-            "surface shading",
-            circles(shadows),
-            f"fill:{_shade(base, 0.9)};fill-opacity:0.35;stroke:{dark};stroke-width:{fine};stroke-opacity:0.18",
-        ),
-        c.path(
-            f"{gid}-texture",
-            "surface texture",
-            circles(highlights),
-            f"fill:{light};fill-opacity:0.4;stroke:{lighter};stroke-width:{fine};stroke-opacity:0.45",
-        ),
+        # Base (the crevice tone): a smooth core plus the spheres; the core is its own element, as in
+        # one compound path its opposite winding would cancel the overlap and open holes.
+        c.path(f"{gid}-core", "core", c.smooth_path(core, closed=True), f"fill:{_deepen(base, 0.25)};stroke:none"),
+        c.path(f"{gid}-body", "body", circles(spheres), f"fill:{_deepen(base, 0.35)};stroke:none"),
+        c.group(f"{gid}-domains", "domains", "".join(lobe_paths), f' clip-path="url(#{gid}-clip)"'),
     ]
     return c.group(gid, "protein (space-filling)", "".join(parts))

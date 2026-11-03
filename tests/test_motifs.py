@@ -164,9 +164,13 @@ def test_protein_globule_layers_and_seeds(style):
     params = {"id": "pg", "cx": 50, "cy": 50, "size": 7}
     group = _parse(registry.build("protein_globule", params, style, seed=1))
     ids = [el.get("id") for el in group]
-    # outline under core under spheres, then texture: the outline only shows at the union's edge
-    assert ids == ["pg-outline", "pg-core", "pg-body", "pg-shading", "pg-texture"]
-    assert style["species"]["protein"]["globule"] in group.find(".//*[@id='pg-body']").get("style")
+    # defs, outline under the (crevice-toned) core and body, then the soft domains clipped to the body
+    assert ids == ["pg-defs", "pg-outline", "pg-core", "pg-body", "pg-domains"]
+    domains = group.find(".//*[@id='pg-domains']")
+    assert domains.get("clip-path") == "url(#pg-clip)" and len(domains) >= 4  # several domains (+ rims)
+    assert all("filter:url(#pg-soft)" in el.get("style") for el in domains)
+    blur = group.find(".//*[@id='pg-soft-blur']")
+    assert blur is not None and group.find(".//*[@id='pg-soft']").get(f"{{{INK}}}auto-region") == "false"
     assert registry.build("protein_globule", params, style, seed=1) != registry.build(
         "protein_globule", params, style, seed=2
     )
