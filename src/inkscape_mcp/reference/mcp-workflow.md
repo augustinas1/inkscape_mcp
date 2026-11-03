@@ -143,8 +143,11 @@ Documents accumulate definitions nothing uses (copy-paste between files is the u
 figure cropped from a master can carry thousands). Three places handle them, all with the same
 rules (svg_cleanup: keep what the drawing reaches through url(#…), href and path-effect chains):
 
-- live document: `inkscape_live(operation="cleanup")` — Inkscape's own "Clean up document" plus
-  empty-group removal; `payload='{"check": true}'` only reports;
+- live document: `inkscape_live(operation="cleanup")` — unused definitions (down to single unused
+  glyphs of a pasted plot's font), empty groups and empty texts, as one undo step;
+  `payload='{"check": true}'` only reports. Inkscape's own "Clean up document" is no substitute:
+  it removes only definitions Inkscape marked collectable, so pasted clip paths, path effects
+  and fonts all survive it (on a 1.6 MB figure it saved nothing; this cut it to 0.45 MB);
 - files and folders: `python -m inkscape_mcp.svg_cleanup --verify --backup DIR PATH ...`
   (`--verify` renders before/after and refuses to write a file whose rendering would change);
 - imports: `import_svg` always prunes what it brings in.

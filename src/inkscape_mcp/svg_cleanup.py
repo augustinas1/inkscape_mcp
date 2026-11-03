@@ -86,10 +86,12 @@ def prune(root: Any) -> CleanupReport:
     by_id = {el.get("id"): el for el in root.iter() if isinstance(el.tag, str) and el.get("id")}
 
     reachable: set[str] = set()
+    direct: set[str] = set()  # referenced by id themselves (not only kept for a referenced member)
     frontier: list[str] = []
     for el in root.iter():
         if isinstance(el.tag, str) and not _in_defs(el) and _local(el.tag) != "defs":
             for ref in references(el):
+                direct.add(ref)
                 if ref not in reachable:
                     reachable.add(ref)
                     frontier.append(ref)
@@ -101,6 +103,7 @@ def prune(root: Any) -> CleanupReport:
             if not isinstance(el.tag, str):
                 continue
             for ref in references(el):
+                direct.add(ref)
                 if ref not in reachable:
                     reachable.add(ref)
                     frontier.append(ref)
@@ -117,6 +120,7 @@ def prune(root: Any) -> CleanupReport:
             ids = {el.get("id") for el in child.iter() if isinstance(el.tag, str) and el.get("id")}
             if ids & reachable:
                 report.defs_kept += 1
+                report.defs_removed += _prune_collection(child, reachable, direct)
             else:
                 defs.remove(child)
                 report.defs_removed += 1
@@ -147,6 +151,26 @@ def prune(root: Any) -> CleanupReport:
         and ("display:none" in (el.get("style") or "").replace(" ", "") or el.get("display") == "none")
     )
     return report
+
+
+def _prune_collection(group: Any, reachable: set[str], direct: set[str]) -> int:
+    """Drop the unreferenced members of a plain <g> in <defs> that only collects definitions.
+
+    cairo (matplotlib's PDF/SVG via cairo) writes each font as one such group of glyph symbols;
+    a pasted plot uses a handful, yet the whole font travels with it. Only an unreferenced,
+    untransformed collection is thinned — referenced as a whole, all of it is drawn.
+    """
+    if _local(group.tag) != "g" or group.get("id") in direct or group.get("transform"):
+        return 0
+    removed = 0
+    for member in list(group):
+        if not isinstance(member.tag, str):
+            continue
+        ids = {el.get("id") for el in member.iter() if isinstance(el.tag, str) and el.get("id")}
+        if ids and not ids & reachable:
+            group.remove(member)
+            removed += 1
+    return removed
 
 
 def clean_bytes(data: bytes) -> tuple[bytes, CleanupReport]:

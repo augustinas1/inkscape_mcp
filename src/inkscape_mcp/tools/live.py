@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import os
 import re
@@ -2081,11 +2082,12 @@ async def _op_outline(bus: InkscapeDBus, operation: str, target: str, start: flo
 
 
 async def _op_cleanup(bus: InkscapeDBus, operation: str, payload: str, window_id: int, start: float) -> dict[str, Any]:
-    """Remove leftover artefacts from the live document: unused definitions and empty groups.
+    """Remove leftover artefacts from the live document, as one undo step.
 
-    Unused <defs> go through Inkscape's own "Clean up document" (vacuum-defs); empty groups
-    are removed in one edit_xml batch. Counts come from snapshots before and after, using the
-    same rules as svg_cleanup. payload {"check": true} only reports.
+    The same rules as svg_cleanup: unused definitions (including the unused glyphs of a pasted
+    plot's font), empty groups and empty texts. Inkscape's own "Clean up document" is not used:
+    it only removes definitions Inkscape marked collectable, so pasted clip paths, path effects
+    and glyphs all survive it. payload {"check": true} only reports.
     """
     from .. import svg_cleanup
 
@@ -2096,18 +2098,23 @@ async def _op_cleanup(bus: InkscapeDBus, operation: str, payload: str, window_id
         except (ValueError, AttributeError) as exc:
             return _result(operation, False, f"payload must be JSON like {{'check': true}}: {exc}", start=start)
 
-    async def survey() -> svg_cleanup.CleanupReport:
-        _SCRATCH_DIR.mkdir(parents=True, exist_ok=True)
-        snap = _SCRATCH_DIR / f"cleanup-{uuid.uuid4().hex[:8]}.svg"
-        try:
-            await _export_document_async(bus, snap)
-            root = etree.fromstring(snap.read_bytes(), parser=etree.XMLParser(huge_tree=True))
-        finally:
-            snap.unlink(missing_ok=True)
-        return svg_cleanup.prune(root)  # on the snapshot: measures what a cleanup would remove
+    _SCRATCH_DIR.mkdir(parents=True, exist_ok=True)
+    snap = _SCRATCH_DIR / f"cleanup-{uuid.uuid4().hex[:8]}.svg"
+    try:
+        await _export_document_async(bus, snap)
+        original = etree.fromstring(snap.read_bytes(), parser=etree.XMLParser(huge_tree=True))
+    finally:
+        snap.unlink(missing_ok=True)
+    for i, el in enumerate(original.iter()):  # number every element, to see exactly which go
+        if isinstance(el.tag, str):
+            el.set(_CLEANUP_MARK, str(i))
+    cleaned = copy.deepcopy(original)
+    report = svg_cleanup.prune(cleaned)
 
-    report = await survey()
-    summary = f"{report.defs_removed} unused definition(s), {report.empty_groups_removed} empty group(s)"
+    summary = (
+        f"{report.defs_removed} unused definition(s), {report.empty_groups_removed} empty group(s), "
+        f"{report.empty_text_removed} empty text(s)"
+    )
     if report.hidden_elements:
         summary += f"; {report.hidden_elements} hidden element(s) left alone"
     data = {k: v for k, v in vars(report).items() if k != "empty_group_ids"}
@@ -2115,19 +2122,49 @@ async def _op_cleanup(bus: InkscapeDBus, operation: str, payload: str, window_id
         verb = "would remove" if report.changed() else "nothing to remove"
         return _result(operation, True, f"cleanup check: {verb} — {summary}", data={"check": True, **data}, start=start)
 
-    if report.defs_removed:
-        bus.activate("vacuum-defs", None, scope="window", window_id=window_id)  # Inkscape's own, one undo step
-    if report.empty_group_ids:
-        ops = [{"xpath": f"//*[@id='{gid}']", "action": "remove"} for gid in report.empty_group_ids]
-        await _op_edit_xml(bus, operation, "", json.dumps({"ops": ops}), window_id, start)
-    after = await survey()
-    return _result(
-        operation,
-        True,
-        f"cleaned up: {summary} (unused definitions left that Inkscape keeps: {after.defs_removed})",
-        data={"removed": data, "remaining_unused_defs": after.defs_removed},
-        start=start,
-    )
+    ops = _cleanup_ops(original, cleaned)
+    applied = await _op_edit_xml(bus, operation, "", json.dumps({"ops": ops}), window_id, start)
+    if applied["success"]:
+        applied["message"] = f"cleaned up, one undo step: {summary}"
+        applied["data"] = {**applied.get("data", {}), "removed": data}
+    return applied
+
+
+_CLEANUP_MARK = "data-mcp-cleanup"
+
+
+def _cleanup_ops(original: Any, cleaned: Any) -> list[dict[str, Any]]:
+    """edit_xml ops turning `original` into `cleaned`: changed <defs> replaced, leftovers removed.
+
+    Both trees carry _CLEANUP_MARK numbers (stripped from what is sent), so removed elements are
+    known exactly; only the top of each removed subtree is named, so no op hits a node already gone.
+    """
+    defs_tag = f"{{{SVG_NS}}}defs"
+    survivors = {el.get(_CLEANUP_MARK) for el in cleaned.iter() if isinstance(el.tag, str)}
+
+    def unmarked(el: Any) -> str:
+        dup = copy.deepcopy(el)
+        for node in dup.iter():
+            if isinstance(node.tag, str):
+                node.attrib.pop(_CLEANUP_MARK, None)
+        return str(etree.tostring(dup, encoding="unicode"))
+
+    ops: list[dict[str, Any]] = []
+    # prune() empties definitions but never removes a <defs> itself, so the two lists align.
+    for k, (old, new) in enumerate(zip(original.iter(defs_tag), cleaned.iter(defs_tag), strict=True), start=1):
+        if etree.tostring(old) != etree.tostring(new):
+            ops.append({"xpath": f"(//svg:defs)[{k}]", "action": "replace", "xml": unmarked(new)})
+    for el in original.iter():
+        if not isinstance(el.tag, str) or el.get(_CLEANUP_MARK) in survivors:
+            continue
+        parent = el.getparent()
+        if parent is not None and parent.get(_CLEANUP_MARK) not in survivors:
+            continue  # goes with its parent
+        if any(a.tag == defs_tag for a in el.iterancestors()):
+            continue  # handled by the <defs> replacement
+        if el.get("id"):
+            ops.append({"xpath": f"//*[@id='{el.get('id')}']", "action": "remove"})
+    return ops
 
 
 async def _op_save_snapshot(bus: InkscapeDBus, operation: str, start: float) -> dict[str, Any]:

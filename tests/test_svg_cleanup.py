@@ -120,14 +120,19 @@ async def test_cleanup_check_changes_nothing(live_doc):
     invoke.assert_not_awaited()
 
 
-async def test_cleanup_vacuums_defs_and_removes_empty_groups(live_doc):
+async def test_cleanup_is_one_batch_of_our_own_pruning(live_doc):
     _, invoke = live_doc
     bus = MagicMock()
     res = await live._op_cleanup(bus, "cleanup", "", 1, time.perf_counter())
-    assert res["success"] is True
-    bus.activate.assert_called_once_with("vacuum-defs", None, scope="window", window_id=1)
+    assert res["success"] is True and "one undo step" in res["message"]
+    bus.activate.assert_not_called()  # not Inkscape's vacuum-defs: it keeps pasted definitions
+    invoke.assert_awaited_once()
     ops = invoke.call_args.args[2]["ops"]
-    assert [op["xpath"] for op in ops] == ["//*[@id='empty-outer']"]  # nested empties go with it
+    assert [op["action"] for op in ops] == ["replace", "remove"]
+    defs = etree.fromstring(ops[0]["xml"])
+    kept = {el.get("id") for el in defs.iter() if el.get("id")}
+    assert "used-grad" in kept and "unused-grad" not in kept and "data-mcp-cleanup" not in ops[0]["xml"]
+    assert ops[1]["xpath"] == "//*[@id='empty-outer']"  # nested empties go with it
 
 
 def test_empty_text_and_the_defs_only_it_used_go_in_one_pass():
@@ -153,3 +158,16 @@ def test_deep_removes_only_what_never_renders():
     out, removed = svg_cleanup.remove_invisible(doc.encode(), INKSCAPE)
     ids = {el.get("id") for el in etree.fromstring(out).iter() if el.get("id")}
     assert removed == 1 and "clipped-away" not in ids and {"visible", "tiny"} <= ids
+
+
+def test_unused_glyphs_are_pruned_from_a_font_collection():
+    doc = f"""<svg xmlns="{SVG}" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 10 10">
+      <defs><g><g id="glyph-0-0"><path d="M0,0h1"/></g><g id="glyph-0-1"><path d="M0,0h2"/></g></g>
+            <g id="whole"><path id="w1" d="M0,0h3"/><path id="w2" d="M0,0h4"/></g></defs>
+      <use xlink:href="#glyph-0-1" x="1" y="1"/><use xlink:href="#whole"/></svg>"""
+    root = etree.fromstring(doc.encode())
+    report = svg_cleanup.prune(root)
+    ids = {el.get("id") for el in root.iter() if el.get("id")}
+    assert "glyph-0-1" in ids and "glyph-0-0" not in ids  # only the glyph in use is kept
+    assert {"whole", "w1", "w2"} <= ids  # a collection used as a whole keeps all its members
+    assert report.defs_removed == 1

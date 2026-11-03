@@ -221,11 +221,19 @@ def _fresh_ids(el: Any, taken: set[str]) -> None:
             node.set("id", new)
 
 
+def transform_str(t: Any) -> str:
+    """A transform at full precision: inkex's str() keeps 6 digits, a visible shift once composed."""
+    a, b, c, d, e, f = t.to_hexad()
+    if (a, b, c, d) == (1, 0, 0, 1):
+        return f"translate({e:.10g},{f:.10g})"
+    return "matrix(" + ",".join(f"{v:.10g}" for v in (a, b, c, d, e, f)) + ")"
+
+
 def _set_transform(el: Any, t: Any) -> None:
     if t == inkex.Transform():
         el.attrib.pop("transform", None)
     else:
-        el.set("transform", str(t))
+        el.set("transform", transform_str(t))
 
 
 def _glyph_to_text(glyphs: Any, text: str, style: str, tid: str) -> Any:
