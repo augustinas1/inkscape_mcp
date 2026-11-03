@@ -127,3 +127,10 @@ def test_line_cap_applies_to_top_level_too():
     doc = DOC.replace("{extra}", "").replace("</svg>", many + "</svg>")
     text = outline(doc.encode(), max_lines=12)
     assert len(text.splitlines()) <= 14 and "outline truncated at 12 lines" in text
+
+
+def test_depth_limit_summarises_deeper_groups():
+    lines = outline(DOC.replace("{extra}", "").encode(), max_depth=1).splitlines()
+    assert any(line.strip().startswith("mrna") for line in lines)
+    assert not any(line.strip().startswith("strand") for line in lines)  # inside mrna, depth 2
+    assert any("… 3 more" in line for line in lines)

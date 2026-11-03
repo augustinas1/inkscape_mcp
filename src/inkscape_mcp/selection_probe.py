@@ -18,6 +18,9 @@ from pathlib import Path
 from typing import Any
 
 OUTPUT_LOG = Path(os.path.expanduser("~/.cache/inkscape_mcp/inkscape-output.log"))
+# Which file each open document came from (Inkscape does not say over D-Bus): written by
+# open_file, read by `save` and by the hooks to tell whether the figure belongs to a project.
+DOC_PATHS = Path(os.path.expanduser("~/.cache/inkscape_mcp/doc-paths.json"))
 _PID_FILE = OUTPUT_LOG.with_suffix(".pid")
 _QUIET_S = 0.15  # output is complete once it stops growing for this long
 _TIMEOUT_S = 0.5  # an empty selection prints nothing: give up waiting after this
@@ -66,3 +69,14 @@ def selected_ids(bus: Any) -> list[str] | None:
     with OUTPUT_LOG.open("rb") as fh:
         fh.seek(offset)
         return parse(fh.read().decode("utf-8", errors="replace"))
+
+
+def known_paths() -> dict[str, str]:
+    """{document name: absolute file path} for documents opened through the server."""
+    import json
+
+    try:
+        data = json.loads(DOC_PATHS.read_text())
+    except (OSError, ValueError):
+        return {}
+    return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}

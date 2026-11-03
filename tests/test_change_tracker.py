@@ -216,3 +216,46 @@ def test_hook_stop_marks_baseline(monkeypatch):
     monkeypatch.setattr(ct, "snapshot_live", _svg)
     assert ct.main(["hook-stop"]) == 0
     assert ct.load_baseline()["doc"] == "fig.svg"
+
+
+def test_project_gate_keeps_other_sessions_out(monkeypatch, capsys, tmp_path):
+    from inkscape_mcp import selection_probe
+
+    project, other = tmp_path / "proj", tmp_path / "other"
+    (project / "figures").mkdir(parents=True)
+    other.mkdir()
+    _, before = _fp()
+    ct.save_baseline("fig.svg", before)
+    exported = []
+    monkeypatch.setattr(ct, "snapshot_live", lambda: exported.append(1) or _svg(label="EDITED"))
+
+    # No figure of this project open: no export, no output, baseline untouched.
+    assert ct.main(["hook-prompt", "--project", str(other)]) == 0
+    assert capsys.readouterr().out == "" and exported == [] and ct.load_baseline()["elements"] == before
+
+    selection_probe.DOC_PATHS.write_text(json.dumps({"fig.svg": str(project / "figures" / "fig.svg")}))
+    assert ct.main(["hook-prompt", "--project", str(other)]) == 0
+    assert capsys.readouterr().out == "" and exported == []  # still not this project's figure
+
+    assert ct.main(["hook-prompt", "--project", str(project)]) == 0
+    context = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert 'text: "OFFoff" → "EDITEDoff"' in context  # this project: reported
+
+
+def test_a_selection_is_reported_once(monkeypatch, capsys):
+    from inkscape_mcp import selection_probe
+
+    _, elements = _fp()
+    ct.save_baseline("fig.svg", elements)
+    monkeypatch.setattr(ct, "_selection_note", _REAL_SELECTION_NOTE)
+    monkeypatch.setattr(ct, "snapshot_live", _svg)
+    monkeypatch.setattr(ct, "_passive_bus", lambda: object())
+    current = {"ids": ["body"]}
+    monkeypatch.setattr(selection_probe, "selected_ids", lambda bus: current["ids"])
+    ct.main(["hook-prompt"])
+    assert "Selected in Inkscape now" in capsys.readouterr().out
+    ct.main(["hook-prompt"])
+    assert capsys.readouterr().out == ""  # unchanged: not repeated
+    current["ids"] = ["label"]
+    ct.main(["hook-prompt"])
+    assert "label  text" in capsys.readouterr().out

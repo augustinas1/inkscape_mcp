@@ -11,6 +11,10 @@ memory because the parties that use it are separate processes: the MCP server (t
   python -m inkscape_mcp.change_tracker hook-prompt   # user wrote: report changes (+ outline of added groups), re-mark
   python -m inkscape_mcp.change_tracker outline       # print the live figure outline
 
+Hooks pass `--project "$CLAUDE_PROJECT_DIR"`: then they act only when the open figure is a file
+of that project (remembered when opened through the server); otherwise they print nothing and
+leave the baseline alone, so other sessions neither see the figure nor consume its changes.
+
 Hook commands never fail loudly and give up after a few seconds: a broken hook would
 otherwise get in the way of every message.
 """
@@ -29,6 +33,7 @@ from typing import Any
 from lxml import etree
 
 BASELINE_FILE = Path(os.path.expanduser("~/.cache/inkscape_mcp/change-baseline.json"))
+_LAST_SELECTION = BASELINE_FILE.with_name("last-selection.json")
 
 _SVG = "http://www.w3.org/2000/svg"
 _INK = "http://www.inkscape.org/namespaces/inkscape"
@@ -51,6 +56,7 @@ _MAX_VALUE = 60
 _HOOK_TIMEOUT_S = 8.0
 _MAX_ADDED_OUTLINES = 3
 _MAX_SELECTION_LINES = 8
+_SESSION_OUTLINE_DEPTH = 2  # layers, their contents and one level more; outline a group for the rest
 _ADDED_OUTLINE_LINES = 25
 _OUTLINE_INTRO = (
     "Outline of the figure open in Inkscape (refresh with inkscape_live operation=outline; "
@@ -309,11 +315,11 @@ def snapshot_live() -> bytes | None:
         scratch.unlink(missing_ok=True)
 
 
-def _outline(svg_bytes: bytes) -> str:
+def _outline(svg_bytes: bytes, max_depth: int = 99) -> str:
     from .figure_outline import outline
 
     try:
-        return outline(svg_bytes)
+        return outline(svg_bytes, max_depth=max_depth)
     except Exception:  # an outline is a nicety; never let it cost the change report
         return ""
 
@@ -347,6 +353,10 @@ def _selection_note(svg_bytes: bytes) -> str:
     if bus is None:
         return ""
     ids = _with_timeout(lambda: selection_probe.selected_ids(bus), 2.0)
+    if ids is None:
+        return ""
+    if not _selection_changed(ids):
+        return ""  # already reported; the same selection is not repeated on every message
     if not ids:
         return ""
     lines = []
@@ -359,6 +369,18 @@ def _selection_note(svg_bytes: bytes) -> str:
     root = etree.fromstring(svg_bytes, parser=etree.XMLParser(huge_tree=True, resolve_entities=False))
     docname = root.get(f"{{{_SODI}}}docname", "")  # named, so hook gates can tell which figure
     return f"Selected in Inkscape now, in {docname}:\n" + "\n".join(lines) + more
+
+
+def _selection_changed(ids: list[str]) -> bool:
+    try:
+        last = json.loads(_LAST_SELECTION.read_text())
+    except (OSError, ValueError):
+        last = None
+    if last == ids:
+        return False
+    _LAST_SELECTION.parent.mkdir(parents=True, exist_ok=True)
+    _LAST_SELECTION.write_text(json.dumps(ids))
+    return True
 
 
 def _hook_output(event: str, context: str) -> str:
@@ -381,12 +403,29 @@ def _with_timeout(fn: Any, timeout_s: float) -> Any:
     return box.get("value")
 
 
+def _project_docs(project: str) -> set[str] | None:
+    """Names of the remembered figure files inside `project` (None: no project given)."""
+    from .selection_probe import known_paths
+
+    if not project:
+        return None
+    root = Path(project).resolve()
+    return {name for name, path in known_paths().items() if Path(path).resolve().is_relative_to(root)}
+
+
 def main(argv: list[str]) -> int:
     command = argv[0] if argv else ""
     if command not in {"hook-session", "hook-stop", "hook-prompt", "mark", "report", "outline"}:
         print(__doc__)
         return 2
+    project = argv[argv.index("--project") + 1] if "--project" in argv[:-1] else ""
 
+    # With --project, stay silent and leave the baseline alone unless the open figure is a file
+    # of that project: other sessions must neither see it nor consume its changes. The first
+    # check needs no export, so unrelated sessions cost almost nothing.
+    docs = _project_docs(project)
+    if docs is not None and not docs:
+        return 0
     svg_bytes = _with_timeout(snapshot_live, _HOOK_TIMEOUT_S)
     if svg_bytes is None:
         return 0  # Inkscape not running / unreachable: say nothing
@@ -394,13 +433,16 @@ def main(argv: list[str]) -> int:
         print(_outline(svg_bytes))
         return 0
     docname, elements = fingerprint(svg_bytes)
+    if docs is not None and docname not in docs:
+        return 0
 
     if command in {"hook-stop", "mark"}:
         save_baseline(docname, elements)
         return 0
     if command == "hook-session":
         save_baseline(docname, elements)
-        outline = _outline(svg_bytes)
+        _LAST_SELECTION.unlink(missing_ok=True)  # a new session has seen no selection yet
+        outline = _outline(svg_bytes, _SESSION_OUTLINE_DEPTH)
         if outline:
             print(_hook_output("SessionStart", f"{_OUTLINE_INTRO}\n{outline}"))
         return 0

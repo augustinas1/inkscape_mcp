@@ -114,5 +114,8 @@ def _private_inkscape_output(tmp_path, monkeypatch):
     monkeypatch.setattr(selection_probe, "_PID_FILE", tmp_path / "inkscape-output.pid")
     from inkscape_mcp.tools import live_figure
 
-    monkeypatch.setattr(live_figure, "DOC_PATHS", tmp_path / "doc-paths.json")
+    monkeypatch.setattr(selection_probe, "DOC_PATHS", tmp_path / "doc-paths.json")
+    from inkscape_mcp import change_tracker
+
+    monkeypatch.setattr(change_tracker, "_LAST_SELECTION", tmp_path / "last-selection.json")
     monkeypatch.setattr(live_figure, "BACKUP_DIR", tmp_path / "backups")

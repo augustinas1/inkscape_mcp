@@ -30,7 +30,6 @@ SODI = "http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
 LABEL = f"{{{INK}}}label"
 GROUPMODE = f"{{{INK}}}groupmode"
 NOT_DRAWN = frozenset({"defs", "metadata", "namedview", "title", "desc", "style", "script"})
-DOC_PATHS = Path(os.path.expanduser("~/.cache/inkscape_mcp/doc-paths.json"))
 BACKUP_DIR = Path(os.path.expanduser("~/.cache/inkscape_mcp/backups"))
 Box = tuple[float, float, float, float]  # left, top, right, bottom (user units)
 
@@ -214,21 +213,18 @@ async def op_selection(bus: Any, operation: str, payload: str, config: Any, star
 
 def remember_path(path: str) -> None:
     """Note which file a document name came from (Inkscape does not report it over D-Bus)."""
-    try:
-        known = json.loads(DOC_PATHS.read_text())
-    except (OSError, ValueError):
-        known = {}
+    from ..selection_probe import DOC_PATHS, known_paths
+
+    known = known_paths()
     known[Path(path).name] = str(Path(path).resolve())
     DOC_PATHS.parent.mkdir(parents=True, exist_ok=True)
     DOC_PATHS.write_text(json.dumps(known, indent=1))
 
 
 def known_path(docname: str) -> str | None:
-    try:
-        found = json.loads(DOC_PATHS.read_text()).get(docname)
-    except (OSError, ValueError):
-        return None
-    return str(found) if found else None
+    from ..selection_probe import known_paths
+
+    return known_paths().get(docname)
 
 
 async def op_save(bus: Any, operation: str, payload: str, start: float) -> dict[str, Any]:

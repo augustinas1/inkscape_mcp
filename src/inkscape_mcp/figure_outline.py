@@ -177,10 +177,11 @@ def _paint(el: Any) -> str:
 
 
 class _Outliner:
-    def __init__(self, max_lines: int = _MAX_LINES) -> None:
+    def __init__(self, max_lines: int = _MAX_LINES, max_depth: int = 99) -> None:
         self.lines: list[str] = []
         self.truncated = 0
         self.max_lines = max_lines
+        self.max_depth = max_depth
 
     def visit(self, el: Any, depth: int) -> Box | None:
         """Outline `el` at `depth`; return its box. Lines are appended in document order."""
@@ -199,7 +200,10 @@ class _Outliner:
             box = _union([b for b in map(_use_box, children) if b])
         elif is_group:
             boxes = []
-            shown = children if len(children) <= _MAX_CHILDREN else children[: _MAX_CHILDREN - 2]
+            if depth >= self.max_depth:
+                shown = []  # deeper than asked: one summary line for the contents
+            else:
+                shown = children if len(children) <= _MAX_CHILDREN else children[: _MAX_CHILDREN - 2]
             for child in shown:
                 box = self.visit(child, depth + 1) if len(self.lines) < self.max_lines else None
                 if len(self.lines) >= self.max_lines and box is None:
@@ -255,8 +259,9 @@ class _Outliner:
             self.lines = saved
 
 
-def outline(svg_bytes: bytes, root_id: str = "", max_lines: int = _MAX_LINES) -> str:
-    """Outline the whole document, or the subtree whose id is `root_id`."""
+def outline(svg_bytes: bytes, root_id: str = "", max_lines: int = _MAX_LINES, max_depth: int = 99) -> str:
+    """Outline the whole document, or the subtree whose id is `root_id`; groups deeper than
+    `max_depth` are summarised in one line ("… 12 more (path x8, text x4)")."""
     document = inkex.load_svg(svg_bytes)
     svg = document.getroot()
     sodi_doc = svg.get(f"{{{_SODI}}}docname") or "untitled"
@@ -265,7 +270,7 @@ def outline(svg_bytes: bytes, root_id: str = "", max_lines: int = _MAX_LINES) ->
         header += f", viewBox {svg.get('viewBox')}"
     header += " — boxes are x left..right, y top..bottom in user units (text boxes approximate)"
 
-    outliner = _Outliner(max_lines)
+    outliner = _Outliner(max_lines, max_depth)
     if root_id:
         start = svg.getElementById(root_id)
         if start is None:

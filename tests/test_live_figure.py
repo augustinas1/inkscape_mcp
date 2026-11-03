@@ -87,7 +87,7 @@ def test_ids_touched_by_an_edit():
 @pytest.fixture
 def doc(monkeypatch, tmp_path):
     monkeypatch.setattr(live, "_SCRATCH_DIR", tmp_path)
-    monkeypatch.setattr(live_figure, "DOC_PATHS", tmp_path / "paths.json")
+    monkeypatch.setattr(selection_probe, "DOC_PATHS", tmp_path / "paths.json")
     monkeypatch.setattr(live_figure, "BACKUP_DIR", tmp_path / "backups")
 
     async def fake_export(bus, path):
