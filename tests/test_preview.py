@@ -38,6 +38,9 @@ def test_element_box_applies_ancestor_transforms():
     assert element_box(DOC.encode(), "old") == pytest.approx((30, 30, 40, 35))
 
 
+QUERY = {"stdout": b""}  # what the fake `inkscape --query-*` prints; empty = the query failed
+
+
 @pytest.fixture
 def cli(monkeypatch, tmp_path):
     """Fake the live export and the Inkscape CLI; record every export command."""
@@ -50,18 +53,23 @@ def cli(monkeypatch, tmp_path):
     calls: list[list[str]] = []
 
     async def fake_exec(*argv, **kwargs):
-        calls.append(list(argv))
-        out = next(a.split("=", 1)[1] for a in argv if a.startswith("--export-filename="))
-        Path(out).write_bytes(b"\x89PNG")
         proc = MagicMock(returncode=0)
+        stdout = b""
+        if any(a.startswith("--query-id=") for a in argv):
+            stdout = QUERY["stdout"]
+        else:
+            calls.append(list(argv))
+            out = next(a.split("=", 1)[1] for a in argv if a.startswith("--export-filename="))
+            Path(out).write_bytes(b"\x89PNG")
 
         async def communicate():
-            return b"", b""
+            return stdout, b""
 
         proc.communicate = communicate
         return proc
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    QUERY["stdout"] = b""
     return calls
 
 
@@ -136,3 +144,13 @@ async def test_fragments_may_use_undeclared_inkscape_prefixes(cli):
     assert res["success"] is True, res
     tree = etree.parse(str(Path(_arg(cli[0], "export-filename")).with_suffix(".svg")))
     assert tree.find(".//*[@id='kit']").get("{http://www.inkscape.org/namespaces/inkscape}label") == "kit"
+
+
+async def test_framing_uses_inkscapes_measured_box(cli):
+    # Inkscape reports the draft's box in CSS px: (10, 20) 30 x 40 px -> user units (mm).
+    QUERY["stdout"] = b"10\n20\n30\n40\n"
+    res = await _preview(xml='<rect id="new" x="0" y="0" width="99" height="99"/>', into="layer1", margin=0)
+    assert res["data"]["box"] == pytest.approx(
+        [10 / PX_PER_MM, 20 / PX_PER_MM, 40 / PX_PER_MM, 60 / PX_PER_MM], abs=0.01
+    )
+    assert [float(v) for v in _arg(cli[0], "export-area").split(":")] == pytest.approx([10, 20, 40, 60], abs=0.02)

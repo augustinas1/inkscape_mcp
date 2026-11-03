@@ -13,6 +13,7 @@ them by more than its own error.
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any
 
@@ -81,6 +82,16 @@ def _inherited(el: Any, name: str, default: str = "") -> str:
     return default
 
 
+def _font_size(el: Any) -> float:
+    """The text's font size: the first one set inside it (tspans often carry it), else inherited."""
+    for node in el.iter():
+        if isinstance(node.tag, str):
+            size = _prop(node, "font-size")
+            if size and not size.endswith("%"):
+                return _length(size, 4.0)
+    return _length(_inherited(el, "font-size"), 4.0)
+
+
 def _text_box(el: Any, transform: Any) -> Box | None:
     first = next((t for t in el.iter() if isinstance(t.tag, str) and t.get("x") is not None), el)
     try:
@@ -88,7 +99,9 @@ def _text_box(el: Any, transform: Any) -> Box | None:
         y = _length(first.get("y", "0"), 0.0)
     except ValueError:
         return None
-    size = _length(_inherited(el, "font-size"), 4.0)
+    if not _text_of(el):
+        return None  # an empty text draws nothing; its anchor would only stretch its group's box
+    size = _font_size(el)
     width = len(_text_of(el)) * size * _CHAR_WIDTH
     anchor = _inherited(el, "text-anchor", "start")
     left = x - width / 2 if anchor == "middle" else x - width if anchor == "end" else x
@@ -110,7 +123,30 @@ def _shape_box(el: Any) -> Box | None:
         return None
     if bbox is None or bbox.width is None:
         return None
-    return (bbox.left, bbox.top, bbox.right, bbox.bottom)
+    box = (bbox.left, bbox.top, bbox.right, bbox.bottom)
+    return box if all(math.isfinite(v) for v in box) else None  # empty geometry reports ±inf
+
+
+def _use_box(el: Any) -> Box | None:
+    """A <use>'s box: its referenced element drawn at (x, y) under the use's transforms.
+
+    inkex gives <use> no box, so plots pasted from matplotlib (text as glyph <use>s) showed none.
+    """
+    href = el.get("{http://www.w3.org/1999/xlink}href") or el.get("href") or ""
+    ref = el.root.getElementById(href[1:]) if href.startswith("#") and el.root is not None else None
+    if ref is None or not isinstance(ref, inkex.ShapeElement):
+        return None
+    place = el.composed_transform() @ inkex.Transform(
+        translate=(_length(el.get("x", "0"), 0.0), _length(el.get("y", "0"), 0.0))
+    )
+    try:
+        bbox = ref.bounding_box(place @ -ref.transform)  # bounding_box re-applies ref's own transform
+    except Exception:
+        return None
+    if bbox is None or bbox.width is None:
+        return None
+    box = (bbox.left, bbox.top, bbox.right, bbox.bottom)
+    return box if all(math.isfinite(v) for v in box) else None
 
 
 def _kind(el: Any) -> str:
@@ -141,9 +177,10 @@ def _paint(el: Any) -> str:
 
 
 class _Outliner:
-    def __init__(self) -> None:
+    def __init__(self, max_lines: int = _MAX_LINES) -> None:
         self.lines: list[str] = []
         self.truncated = 0
+        self.max_lines = max_lines
 
     def visit(self, el: Any, depth: int) -> Box | None:
         """Outline `el` at `depth`; return its box. Lines are appended in document order."""
@@ -155,14 +192,17 @@ class _Outliner:
         self.lines.append("")  # placeholder: the box of a group is known only after its children
         is_text = isinstance(el, inkex.TextElement)
         is_group = isinstance(el, (inkex.Group, inkex.Layer)) or el.tag == f"{{{_SVG}}}svg"
+        children = [c for c in el if isinstance(c.tag, str) and c.tag not in _SKIP_TAGS] if is_group else []
+        glyphs = bool(children) and all(isinstance(c, inkex.Use) for c in children)
 
-        if is_group:
-            children = [c for c in el if isinstance(c.tag, str) and c.tag not in _SKIP_TAGS]
+        if glyphs:  # a run of glyph <use>s (text pasted from a plot): one line, not one per glyph
+            box = _union([b for b in map(_use_box, children) if b])
+        elif is_group:
             boxes = []
             shown = children if len(children) <= _MAX_CHILDREN else children[: _MAX_CHILDREN - 2]
             for child in shown:
-                box = self.visit(child, depth + 1) if len(self.lines) < _MAX_LINES else None
-                if len(self.lines) >= _MAX_LINES and box is None:
+                box = self.visit(child, depth + 1) if len(self.lines) < self.max_lines else None
+                if len(self.lines) >= self.max_lines and box is None:
                     self.truncated += 1
                 if box:
                     boxes.append(box)
@@ -178,9 +218,9 @@ class _Outliner:
                 self.lines.append("  " * (depth + 1) + f"… {len(rest)} more ({summary})")
             box = _union(boxes)
         elif is_text:
-            box = _text_box(
-                el, el.getparent().composed_transform() if el.getparent() is not None else inkex.Transform()
-            )
+            box = _text_box(el, el.composed_transform())  # includes the text's own transform
+        elif isinstance(el, inkex.Use):
+            box = _use_box(el)
         elif isinstance(el, inkex.ShapeElement):
             box = _shape_box(el)
         else:
@@ -190,7 +230,7 @@ class _Outliner:
         label = el.get(f"{{{_INK}}}label")
         if label and label != el.get("id"):
             fields.append(f'"{label}"')
-        fields.append(_kind(el))
+        fields.append(f"glyphs x{len(children)} (outlined text)" if glyphs else _kind(el))
         if is_text:
             text = _text_of(el)
             fields.append(repr(text if len(text) <= _MAX_TEXT else text[: _MAX_TEXT - 1] + "…"))
@@ -201,6 +241,9 @@ class _Outliner:
             fields.append(paint)
         if hidden:
             fields.append("HIDDEN")
+        elif box is None:
+            del self.lines[index:]  # draws nothing (empty text or group, degenerate path): no line
+            return None
         self.lines[index] = "  " * depth + "  ".join(fields)
         return None if hidden else box
 
@@ -212,7 +255,7 @@ class _Outliner:
             self.lines = saved
 
 
-def outline(svg_bytes: bytes, root_id: str = "") -> str:
+def outline(svg_bytes: bytes, root_id: str = "", max_lines: int = _MAX_LINES) -> str:
     """Outline the whole document, or the subtree whose id is `root_id`."""
     document = inkex.load_svg(svg_bytes)
     svg = document.getroot()
@@ -222,7 +265,7 @@ def outline(svg_bytes: bytes, root_id: str = "") -> str:
         header += f", viewBox {svg.get('viewBox')}"
     header += " — boxes are x left..right, y top..bottom in user units (text boxes approximate)"
 
-    outliner = _Outliner()
+    outliner = _Outliner(max_lines)
     if root_id:
         start = svg.getElementById(root_id)
         if start is None:
@@ -230,10 +273,13 @@ def outline(svg_bytes: bytes, root_id: str = "") -> str:
         outliner.visit(start, 0)
     else:
         for child in svg:
+            if len(outliner.lines) >= max_lines:
+                outliner.truncated += 1
+                continue
             outliner.visit(child, 0)
     lines = [header, *outliner.lines]
     if outliner.truncated:
-        lines.append(f"… outline truncated at {_MAX_LINES} lines; outline a group by id for the rest")
+        lines.append(f"… outline truncated at {max_lines} lines; outline a group by id for the rest")
     return "\n".join(lines)
 
 

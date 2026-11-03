@@ -8,7 +8,7 @@ memory because the parties that use it are separate processes: the MCP server (t
 
   python -m inkscape_mcp.change_tracker hook-session  # session (re)started: outline, mark
   python -m inkscape_mcp.change_tracker hook-stop     # agent finished: mark baseline
-  python -m inkscape_mcp.change_tracker hook-prompt   # user wrote: report changes + outline, re-mark
+  python -m inkscape_mcp.change_tracker hook-prompt   # user wrote: report changes (+ outline of added groups), re-mark
   python -m inkscape_mcp.change_tracker outline       # print the live figure outline
 
 Hook commands never fail loudly and give up after a few seconds: a broken hook would
@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import threading
 import uuid
@@ -48,6 +49,8 @@ _VOLATILE_ATTRS = frozenset(
 _MAX_LINES = 30
 _MAX_VALUE = 60
 _HOOK_TIMEOUT_S = 8.0
+_MAX_ADDED_OUTLINES = 3
+_ADDED_OUTLINE_LINES = 25
 _OUTLINE_INTRO = (
     "Outline of the figure open in Inkscape (refresh with inkscape_live operation=outline; "
     "address elements by these ids):"
@@ -66,12 +69,36 @@ def _local(name: str) -> str:
     return str(etree.QName(name).localname)
 
 
+_NUMBER = re.compile(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?")
+
+
+def _norm(value: str) -> str:
+    """A value with Inkscape's re-serialisation noise removed.
+
+    Inkscape rewrites attributes it did not change in meaning — `matrix(1 0 0 1 5 6)` becomes
+    `matrix(1,0,0,1,5,6)`, double quotes in a font name become single — which used to be
+    reported as user edits. Numbers are compared at 3 decimals; separators and quotes ignored.
+    """
+    text = _NUMBER.sub(lambda m: f"{round(float(m.group()), 3):g}", value)
+    return " ".join(text.replace(",", " ").replace('"', "").replace("'", "").split())
+
+
+def _transform(value: str) -> str:
+    """Transforms compared as their matrix, so translate(5, 6) == matrix(1,0,0,1,5,6)."""
+    try:
+        import inkex
+
+        return " ".join(f"{round(v, 3):g}" for v in inkex.Transform(value).to_hexad())
+    except Exception:
+        return _norm(value)
+
+
 def _style(value: str) -> dict[str, str]:
     out = {}
     for decl in value.split(";"):
         key, _, val = decl.partition(":")
         if key.strip():
-            out[key.strip()] = val.strip()
+            out[key.strip()] = _norm(val)
     return out
 
 
@@ -92,7 +119,9 @@ def fingerprint(svg_bytes: bytes) -> tuple[str, dict[str, dict[str, Any]]]:
         if not isinstance(el.tag, str) or el.tag in _SKIP_TAGS:
             return
         key = key_of(el, parent_key, index)
-        attrs = {_local(k): v for k, v in el.attrib.items() if k != "id" and k not in _VOLATILE_ATTRS and k != "style"}
+        attrs = {
+            _local(k): _norm(v) for k, v in el.attrib.items() if k != "id" and k not in _VOLATILE_ATTRS and k != "style"
+        }
         sig: dict[str, Any] = {
             "tag": _local(el.tag),
             "parent": parent_key,
@@ -142,6 +171,7 @@ def diff(old: dict[str, dict[str, Any]], new: dict[str, dict[str, Any]]) -> list
             size = sum(1 for k in added if _is_descendant(k, key, new))
             extra = f" ({size} element(s) inside)" if size else ""
             lines.append(f"+ added {_label(key, new[key])} in #{new[key]['parent'] or 'root'}{extra}")
+    moves: dict[tuple[str, str], list[str]] = {}
     for key in sorted(old.keys() & new.keys()):
         before, after = old[key], new[key]
         changes: list[str] = []
@@ -149,7 +179,8 @@ def diff(old: dict[str, dict[str, Any]], new: dict[str, dict[str, Any]]) -> list
             changes.append(f"moved from #{before['parent']} to #{after['parent']}")
         for name in sorted(before["attrs"].keys() | after["attrs"].keys()):
             a, b = before["attrs"].get(name), after["attrs"].get(name)
-            if a != b:
+            same = _transform(a) == _transform(b) if name == "transform" and a and b else a == b
+            if not same:
                 changes.append(f"{name}: {_short(a)} → {_short(b)}")
         for name in sorted(before["style"].keys() | after["style"].keys()):
             a, b = before["style"].get(name), after["style"].get(name)
@@ -157,12 +188,26 @@ def diff(old: dict[str, dict[str, Any]], new: dict[str, dict[str, Any]]) -> list
                 changes.append(f"style {name}: {_short(a)} → {_short(b)}")
         if before.get("text") != after.get("text"):
             changes.append(f'text: "{_short(before.get("text"))}" → "{_short(after.get("text"))}"')
-        if changes:
+        if changes == [f"moved from #{before['parent']} to #{after['parent']}"]:
+            moves.setdefault((before["parent"], after["parent"]), []).append(key)
+        elif changes:
             lines.append(f"~ {_label(key, after)}: " + "; ".join(changes))
+    for (src, dst), keys in moves.items():  # regrouping moves many elements at once: one line
+        if len(keys) <= 2:
+            lines.extend(f"~ {_label(k, new[k])}: moved from #{src} to #{dst}" for k in keys)
+        else:
+            shown = ", ".join(keys[:4]) + (", …" if len(keys) > 4 else "")
+            lines.append(f"~ {len(keys)} elements moved from #{src or 'root'} to #{dst or 'root'} ({shown})")
 
     if len(lines) > _MAX_LINES:
         lines = [*lines[:_MAX_LINES], f"… and {len(lines) - _MAX_LINES} more change(s)"]
     return lines
+
+
+def added_roots(old: dict[str, dict[str, Any]], new: dict[str, dict[str, Any]]) -> list[str]:
+    """Ids of the top-most added elements (the groups the user created or pasted)."""
+    added = new.keys() - old.keys()
+    return sorted(k for k in added if "/" not in k and new[k]["parent"] not in added)
 
 
 def _is_descendant(key: str, ancestor: str, elements: dict[str, dict[str, Any]]) -> bool:
@@ -201,6 +246,7 @@ def compare(docname: str, elements: dict[str, dict[str, Any]], *, mark: bool = T
             result["doc_switched_from"] = baseline.get("doc")
         else:
             result["changes"] = diff(baseline["elements"], elements)
+            result["added"] = added_roots(baseline["elements"], elements)
     if mark:
         save_baseline(docname, elements)
     return result
@@ -271,6 +317,22 @@ def _outline(svg_bytes: bytes) -> str:
         return ""
 
 
+def _added_outlines(svg_bytes: bytes, added: list[str]) -> str:
+    """Outlines of the groups the user added (the rest of the figure the agent already knows)."""
+    from .figure_outline import outline
+
+    parts = []
+    for gid in added[:_MAX_ADDED_OUTLINES]:
+        try:
+            body = outline(svg_bytes, gid, _ADDED_OUTLINE_LINES).split("\n", 1)[1]
+        except Exception:  # noqa: S112 — an outline is a nicety; the change report must still go out
+            continue
+        parts.append(body)
+    if not parts:
+        return ""
+    return "\n\nAdded, as outlined (refresh with inkscape_live operation=outline target=<id>):\n" + "\n".join(parts)
+
+
 def _hook_output(event: str, context: str) -> str:
     return json.dumps({"hookSpecificOutput": {"hookEventName": event, "additionalContext": context}})
 
@@ -315,14 +377,12 @@ def main(argv: list[str]) -> int:
             print(_hook_output("SessionStart", f"{_OUTLINE_INTRO}\n{outline}"))
         return 0
 
-    report = format_report(compare(docname, elements))
+    result = compare(docname, elements)
+    report = format_report(result)
     if command == "report":
         print(report or "no changes")
     elif report:
-        outline = _outline(svg_bytes)
-        if outline:
-            report += f"\n\n{_OUTLINE_INTRO}\n{outline}"
-        print(_hook_output("UserPromptSubmit", report))
+        print(_hook_output("UserPromptSubmit", report + _added_outlines(svg_bytes, result.get("added", []))))
     return 0
 
 

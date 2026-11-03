@@ -135,7 +135,8 @@ operations. Highlights:
 
 - **Bridge:** `ping`.
 - **Selection:** `get_selection`, `set_selection`, `delete_selected`.
-- **Document:** `get_document_xml`, `open_file`, `save_snapshot`.
+- **Document:** `get_document_xml` (`target` = an id returns that subtree; XML over 40 KB comes
+  back as a file path), `open_file`, `save_snapshot`.
 - **Hand-off:** `changes` — what the user edited in Inkscape since the last check (added,
   deleted, moved, restyled elements by id); re-baselines unless `payload` is `{"mark": false}`.
   Reads an export snapshot, so it leaves no undo step. See INSTALL.md for the Claude Code hooks
@@ -144,7 +145,14 @@ operations. Highlights:
   user units), nested like the Objects dialog; `target` = an id outlines that subtree. A
   typical figure is ~2–3 KB, so read it before `get_document_xml` when looking for an object.
   No undo step.
-- **Editing:** `apply_action`, `insert_svg`, `edit_xml`, `path_edit`.
+- **Editing:** `apply_action`, `insert_svg`, `edit_xml` (batches as one undo step; large batches
+  from a file with `ops_path`, fragments with `xml_path`), `path_edit`.
+- **Re-plotted data:** `transplant` — put a new matplotlib plot (`source`) in place of its older,
+  hand-restyled version (`target`): axes aligned, the old plot's styles copied element by element,
+  plot parts the old one no longer has dropped, hand-made objects (real text, legend boxes)
+  carried over, the old plot parked where the new one was. `check` / `preview` first; outlined
+  text becomes real text with `glyph_text`. Plots exported with the figure's style sheet
+  (`python -m inkscape_mcp.mplstyle`) keep their text editable and need little restyling.
 - **Inspection:** `inspect_selection`, `inspect_layers`, `inspect_defs`, `inspect_view`, `inspect_pages`, `inspect_element`.
 - **Discovery:** `list_actions` (filtered).
 - **Extensions on live doc:** `execute_inkex`.
@@ -152,7 +160,7 @@ operations. Highlights:
   the agent can see the result. `area` is `x:y:w:h` in document units (mm for a mm document).
 - **Drafting:** `preview` — render a draft fragment in the live document's context (replacing
   an element, or appended into a parent) without changing the document; returns after/before
-  PNGs framed on the draft. No undo step.
+  PNGs framed on the draft (on the box Inkscape measures). No undo step.
 - **Generators:** `component` — runs any registered, seeded, parametric generator
   (`{"kind": "catalogue"}` lists them): schematic parts (`arrow`, `gene`, `rna_strand`, `protein`,
   `decay`), scatter (Poisson-disc, jittered grid, clusters), organic (blob, folded chain, wobbly

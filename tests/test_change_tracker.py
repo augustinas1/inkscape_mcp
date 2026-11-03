@@ -61,7 +61,7 @@ def test_view_changes_are_not_reported():
 def test_moving_a_group_is_one_line():
     _, before = _fp()
     _, after = _fp(gene_transform="translate(0,12)")
-    assert ct.diff(before, after) == ["~ <g#gene-off>: transform: none → translate(0,12)"]
+    assert ct.diff(before, after) == ["~ <g#gene-off>: transform: none → translate(0 12)"]
 
 
 def test_style_and_text_changes_are_itemised():
@@ -93,7 +93,7 @@ def test_compare_marks_and_peeks(tmp_path):
 
     _, moved = _fp(gene_transform="translate(0,12)")
     peek = ct.compare("fig.svg", moved, mark=False)
-    assert peek["changes"] == ["~ <g#gene-off>: transform: none → translate(0,12)"]
+    assert peek["changes"] == ["~ <g#gene-off>: transform: none → translate(0 12)"]
     # Peeking left the baseline alone, so the same change is still reported...
     assert ct.compare("fig.svg", moved)["changes"] == peek["changes"]
     # ...and marking consumed it.
@@ -112,7 +112,7 @@ def test_report_is_silent_without_changes():
     assert ct.format_report({"doc": "fig.svg", "had_baseline": True, "changes": []}) == ""
 
 
-def test_hook_prompt_emits_changes_and_outline(monkeypatch, capsys):
+def test_hook_prompt_emits_changes_only(monkeypatch, capsys):
     _, before = _fp()
     ct.save_baseline("fig.svg", before)
     monkeypatch.setattr(ct, "snapshot_live", lambda: _svg(gene_transform="translate(0,12)"))
@@ -121,10 +121,42 @@ def test_hook_prompt_emits_changes_and_outline(monkeypatch, capsys):
     out = json.loads(capsys.readouterr().out)
     context = out["hookSpecificOutput"]["additionalContext"]
     assert out["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
-    assert "~ <g#gene-off>: transform: none → translate(0,12)" in context
-    # The fresh outline follows the change list, with the moved group's new position.
-    assert ct._OUTLINE_INTRO in context
-    assert "body  rect  x 41..69  y 40.5..47.5" in context
+    assert "~ <g#gene-off>: transform: none → translate(0 12)" in context
+    # Nothing was added, so no outline: the agent already knows the rest of the figure.
+    assert "outline" not in context.lower()
+
+
+def test_hook_prompt_outlines_only_added_groups(monkeypatch, capsys):
+    _, before = _fp()
+    ct.save_baseline("fig.svg", before)
+    extra = '<g id="pasted"><rect id="bar" x="1" y="2" width="3" height="4"/></g>'
+    monkeypatch.setattr(ct, "snapshot_live", lambda: _svg(extra=extra))
+
+    assert ct.main(["hook-prompt"]) == 0
+    context = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert "+ added <g#pasted> in #layer1" in context
+    assert "bar  rect  x 1..4  y 2..6" in context and "body  rect" not in context
+
+
+def test_inkscape_reserialisation_is_not_a_change():
+    _, before = _fp(gene_transform="matrix(1 0 0 1 5 6)")
+    _, after = _fp(gene_transform="translate(5.0000001,6)")
+    after["body"]["style"]["font-family"] = before["body"]["style"]["font-family"] = ""
+    before["label"]["attrs"]["style-ish"] = ct._norm('"Calibri, Normal"')
+    after["label"]["attrs"]["style-ish"] = ct._norm("'Calibri, Normal'")
+    assert ct.diff(before, after) == []
+
+
+def test_regrouping_is_one_line():
+    _, before = _fp(extra="".join(f'<circle id="c{i}" r="1"/>' for i in range(5)))
+    _, after = _fp(extra="".join(f'<circle id="c{i}" r="1"/>' for i in range(5)))
+    for i in range(5):
+        after[f"c{i}"]["parent"] = "box"
+    after["box"] = {"tag": "g", "parent": "layer1", "attrs": {}, "style": {}}
+    assert ct.diff(before, after) == [
+        "+ added <g#box> in #layer1",
+        "~ 5 elements moved from #layer1 to #box (c0, c1, c2, c3, …)",
+    ]
 
 
 def test_hook_prompt_without_changes_says_nothing(monkeypatch, capsys):

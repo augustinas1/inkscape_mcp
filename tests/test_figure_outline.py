@@ -97,3 +97,33 @@ def test_subtree_by_id():
 def test_unknown_id_raises():
     with pytest.raises(KeyError):
         _outline(root_id="nope")
+
+
+def test_text_box_applies_the_texts_own_transform():
+    lines = _outline('<text id="moved" x="0" y="10" font-size="4" transform="translate(50,20)">ab</text>')
+    assert "x 50..54.4  y 27..31" in _line(lines, "moved")
+
+
+def test_glyph_runs_are_one_line_with_a_box():
+    glyphs = (
+        '<defs><g id="glyph-0-1"><path d="M 0,0 h 4 v -6 h -4 z"/></g></defs>'
+        '<g id="ticklabel" transform="translate(10,0)"><use xlink:href="#glyph-0-1" x="5" y="50"/>'
+        '<use xlink:href="#glyph-0-1" x="10" y="50"/></g>'
+    )
+    doc = DOC.replace("{extra}", glyphs).replace("<svg ", '<svg xmlns:xlink="http://www.w3.org/1999/xlink" ', 1)
+    lines = outline(doc.encode()).splitlines()
+    assert _line(lines, "ticklabel").strip() == "ticklabel  glyphs x2 (outlined text)  x 15..24  y 44..50"
+    assert not any(line.strip().startswith("use") for line in lines)
+
+
+def test_elements_that_draw_nothing_get_no_line():
+    lines = _outline('<text id="blank" x="1" y="1"> </text><g id="hollow"><path id="nothing" d=""/></g>')
+    ids = {line.strip().split("  ")[0] for line in lines}
+    assert not {"blank", "hollow", "nothing"} & ids
+
+
+def test_line_cap_applies_to_top_level_too():
+    many = "".join(f'<rect id="r{i}" x="{i}" y="0" width="1" height="1"/>' for i in range(30))
+    doc = DOC.replace("{extra}", "").replace("</svg>", many + "</svg>")
+    text = outline(doc.encode(), max_lines=12)
+    assert len(text.splitlines()) <= 14 and "outline truncated at 12 lines" in text

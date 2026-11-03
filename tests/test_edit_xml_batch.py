@@ -159,3 +159,21 @@ async def test_extension_rejection_says_nothing_changed(mock_invoke):
     )
     res = await _run("", {"ops": [{"xpath": "//a", "action": "remove"}, {"xpath": "//b", "action": "remove"}]})
     assert res["success"] is False and "nothing changed" in res["message"] and "op 1" in res["message"]
+
+
+async def test_batch_and_fragments_can_come_from_files(mock_invoke, tmp_path):
+    frag = tmp_path / "frag.svg"
+    frag.write_text('<g id="big"/>')
+    ops = tmp_path / "ops.json"
+    ops.write_text(json.dumps({"ops": [{"xpath": "//*[@id='a']", "action": "replace", "xml_path": str(frag)}]}))
+    res = await _run("", {"ops_path": str(ops)})
+    assert res["success"] is True
+    assert mock_invoke.call_args.args[2]["ops"] == [
+        {"xpath": "//*[@id='a']", "action": "replace", "xml": '<g id="big"/>'}
+    ]
+
+
+async def test_missing_ops_file_is_a_clear_error(mock_invoke, tmp_path):
+    res = await _run("", {"ops_path": str(tmp_path / "nope.json")})
+    assert res["success"] is False and "nope.json" in res["message"]
+    mock_invoke.assert_not_awaited()

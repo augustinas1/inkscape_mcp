@@ -91,6 +91,45 @@ The batch is all-or-nothing: it is rehearsed on a copy first, and if any op fail
 applied and the error names the op (`op 1 (remove): xpath matched no nodes`). Later ops see
 earlier ones. An op without `xpath` uses `target`.
 
+Large edits need not be pasted inline: `{"ops_path": "/path/ops.json"}` reads the batch from a
+file (`{"ops": [...]}` or a bare list), and any op (or a single edit) may give `"xml_path"`
+instead of `"xml"`. Read large XML the same way: `get_document_xml` with `target=<id>` returns
+one subtree, and anything over 40 KB comes back as a file path, not inline.
+
+### Swapping in a re-plotted figure part (`transplant`)
+
+When a plot's data changes, paste the new export anywhere (off the page is fine) and let
+`transplant` put it in place of the old, hand-restyled one, as one undo step:
+
+```
+inkscape_live(operation="transplant", payload='{"source": "g17", "target": "g64", "check": true}')
+inkscape_live(operation="transplant", payload='{"source": "g17", "target": "g64", "preview": true}')
+inkscape_live(operation="transplant", payload='{"source": "g17", "target": "g64"}')
+```
+
+- **Lines up** the axes (cairo exports: the plot origin every mark shares; matplotlib's own
+  SVG backend: the axes frame).
+- **Restyles** each mark like its counterpart in the old plot. Counterparts are matched by what
+  matplotlib wrote, which hand edits leave alone: presentation attributes (cairo) or the mark's
+  role (`axes_1/line2d`, `matplotlib.axis_1/xtick/text`; matplotlib-svg).
+- **Drops** marks the old plot no longer has (a white background, outlined legend text you
+  replaced). When the old plot has fewer of a kind, only marks sharing a row or column with one
+  are kept, so extra ticks survive and stray legend swatches go.
+- **Carries over** your own objects inside the old plot (real text, legend boxes, extra lines)
+  unchanged. They are data-blind: a label or marker placed at a data position (a band edge, a
+  value) keeps the OLD position, so check the report's `copied` list and move or `skip` those.
+- **Parks** the old plot where the new one was (`"park": false` deletes it).
+- **Outlined text** (cairo glyph runs, listed as `outlined_text`) becomes real text with
+  `"glyph_text": {"<run id>": "20"}` and a `"text_style"`.
+
+Mixed hand styles among marks of one kind (say an arrowhead only on infinite values) are
+data-specific; the commonest style wins and the report says so.
+
+Avoid most of this at the source: export plots with the figure's style sheet,
+`python -m inkscape_mcp.mplstyle figures/style.json --font Calibri > figures/figure.mplstyle`,
+then `plt.style.use(...)` and `savefig("plot.svg")`. Its `svg.fonttype: none` keeps text as
+real `<text>`, and the colours, weights and fonts already match the figure.
+
 **What `edit_xml` covers that `apply_action` can't:**
 
 - Adding `<filter>`, `<marker>`, `<symbol>`, `<pattern>`, `<clipPath>` to `<defs>`.

@@ -683,9 +683,20 @@ class InkscapeMCPServer:
             kind, text, colours, bbox in user units — nested like the Objects dialog
             (~2 KB for a typical figure). `target` = an id outlines just that subtree.
             Read it before get_document_xml when looking for an object.
+            `get_document_xml` `target` = an id returns just that subtree; large XML comes
+            back as a file path, not inline.
 
             `edit_xml` payload `{"ops": [...]}` applies many edits as ONE undo step,
-            all-or-nothing — prefer it whenever a change touches several elements.
+            all-or-nothing — prefer it whenever a change touches several elements. Big
+            batches can come from files: `{"ops_path": "ops.json"}`, or `"xml_path"` per op.
+
+            `transplant` swaps a re-plotted (matplotlib) group into the place of its older,
+            hand-restyled version: payload `{"source": "<new>", "target": "<old>"}` aligns
+            the axes, copies the old plot's styles element by element, drops plot parts the
+            old one no longer has, carries over hand-made objects (real text, legend boxes)
+            and parks the old plot where the new one was. `"check": true` reports first,
+            `"preview": true` renders it; `"glyph_text": {"<glyph run id>": "20"}` with
+            `"text_style"` turns outlined text into real text. One undo step.
 
             `preview` renders a draft IN CONTEXT without touching the document: payload
             `{"xml": "<g id=…>…</g>", "replace": "<id>"}` (or `"into": "<parent id>"`)
@@ -706,7 +717,7 @@ class InkscapeMCPServer:
             Operations: ping, get_document_xml, get_selection, set_selection, insert_svg,
             delete_selected, apply_action, list_actions, open_file, save_snapshot, changes, outline,
             edit_xml, path_edit, inspect_selection/layers/defs/view/pages/element,
-            execute_inkex, rasterize, preview, component.
+            execute_inkex, rasterize, preview, component, transplant.
             """
             return await inkscape_live_tool(
                 operation=operation,

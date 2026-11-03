@@ -415,15 +415,39 @@ def _op_ping(bus: InkscapeDBus, operation: str, start: float) -> dict[str, Any]:
     )
 
 
-async def _op_get_document_xml(bus: InkscapeDBus, operation: str, start: float) -> dict[str, Any]:
+_INLINE_DOC_LIMIT = 40_000  # chars; beyond this the XML goes to a file (clients choke on MBs)
+
+
+async def _op_get_document_xml(bus: InkscapeDBus, operation: str, target: str, start: float) -> dict[str, Any]:
+    """The document's XML, or with `target` (an id) just that element's subtree.
+
+    Small results come back inline; large ones as a file path (plus the first lines), so a
+    1.7 MB figure does not flood the conversation — read the file, or narrow with `target`.
+    """
     scratch = _scratch_path()
     await _export_document_async(bus, scratch)
     xml = scratch.read_text(encoding="utf-8")
+    what = "document"
+    if target:
+        element_id = target.lstrip("#")
+        doc = etree.fromstring(xml.encode("utf-8"), parser=etree.XMLParser(huge_tree=True))
+        el = doc.find(f".//*[@id='{element_id}']")
+        if el is None:
+            return _result(operation, False, f"no element with id {element_id!r}", error="unknown id", start=start)
+        xml = etree.tostring(el, encoding="unicode")
+        scratch = scratch.with_name(f"{scratch.stem}-{re.sub(r'[^A-Za-z0-9_-]', '_', element_id)}.svg")
+        scratch.write_text(xml, encoding="utf-8")
+        what = f"#{element_id}"
+    if len(xml) <= _INLINE_DOC_LIMIT:
+        return _result(
+            operation, True, f"{what} XML ({len(xml)} chars)", data={"xml": xml, "path": str(scratch)}, start=start
+        )
     return _result(
         operation,
         True,
-        f"Exported document XML ({len(xml)} bytes)",
-        data={"xml": xml, "path": str(scratch)},
+        f"{what} XML is {len(xml)} chars — written to {scratch} (not inlined). Read that file, or pass "
+        "target=<id> for one subtree; outline is the cheap way to find ids.",
+        data={"path": str(scratch), "chars": len(xml), "head": xml[:400]},
         start=start,
     )
 
@@ -1360,6 +1384,35 @@ async def _run_png_export(cmd: list[str], out_path: Path) -> str:
     return ""
 
 
+async def _query_box(exe: str, svg_path: Path, element_id: str, svg_bytes: bytes) -> Any:
+    """Inkscape's visual bounding box of `element_id` in user units, or None if the query fails."""
+    import inkex
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            exe,
+            f"--query-id={element_id}",
+            "--query-x",
+            "--query-y",
+            "--query-width",
+            "--query-height",
+            str(svg_path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
+        x, y, w, h = (float(v) for v in out.decode().split()[:4])
+    except (OSError, ValueError, TimeoutError):
+        return None
+    if w <= 0 or h <= 0:
+        return None
+    svg = inkex.load_svg(svg_bytes).getroot()
+    scale = svg.uutounit(1, "px")  # query values are CSS px from the viewBox origin
+    vb = [float(v) for v in re.split(r"[\s,]+", (svg.get("viewBox") or "0 0").strip())[:2]]
+    left, top = vb[0] + x / scale, vb[1] + y / scale
+    return (left, top, left + w / scale, top + h / scale)
+
+
 async def _op_preview(
     bus: InkscapeDBus, operation: str, target: str, payload: str, config: Any, start: float
 ) -> dict[str, Any]:
@@ -1441,20 +1494,23 @@ async def _op_preview(
             for frag in frags:
                 parent.append(frag)
     draft = etree.tostring(doc)
+    if doc.find(f".//*[@id='{focus}']") is None:
+        return _result(operation, False, f"no element with id {focus!r}", error="unknown id", start=start)
+    exe = str(getattr(config, "inkscape_executable", None) or _resolve_inkscape_exe(config))
+    after_svg = _SCRATCH_DIR / f"{stem}.svg"
+    after_svg.write_bytes(draft)
 
-    try:
-        box = element_box(draft, focus)
-    except KeyError as exc:
-        return _result(operation, False, str(exc.args[0]), error="unknown id", start=start)
+    # Frame on what Inkscape actually draws; the outline's estimate is the fallback (it can
+    # overshoot on text, which used to frame the whole page).
+    box = await _query_box(exe, after_svg, focus, draft) or element_box(draft, focus)
     if box is None:
         return _result(operation, False, f"{focus!r} has no visible extent to frame", error="empty", start=start)
     margin = float(args.get("margin", 3))
     framed = (box[0] - margin, box[1] - margin, box[2] + margin, box[3] + margin)
     area = user_area_to_px(draft, framed)
     dpi = float(args.get("dpi", 600))
-    exe = str(getattr(config, "inkscape_executable", None) or _resolve_inkscape_exe(config))
 
-    renders = {"after": (_SCRATCH_DIR / f"{stem}.svg", draft)}
+    renders = {"after": (after_svg, draft)}
     if args.get("before", bool(replace_id and frags)):
         renders["before"] = (before_svg, original)
     paths: dict[str, str] = {}
@@ -1614,13 +1670,14 @@ async def _op_edit_xml(
 
     payload (JSON): {"action": "<verb>", ...action-args}
     actions:
-      append/insert_before/insert_after/replace → require "xml" arg
+      append/insert_before/insert_after/replace → require "xml" (or "xml_path", a file) arg
       remove → no args
       set_attr → require "name", "value"
       set_text → require "text"
 
     Batch: {"ops": [{"xpath": ..., "action": ..., ...}, ...]} applies every op as ONE
-    undoable step, all-or-nothing; an op without "xpath" uses `target`.
+    undoable step, all-or-nothing; an op without "xpath" uses `target`. A large batch can
+    live in a file: {"ops_path": "/path/ops.json"}.
     """
     valid_actions = {
         "append",
@@ -1644,6 +1701,10 @@ async def _op_edit_xml(
             error="bad payload",
             start=start,
         )
+    try:
+        payload = _resolve_edit_files(payload)
+    except (OSError, ValueError) as exc:
+        return _result(operation, False, str(exc), error="bad path", start=start)
 
     if "ops" in payload:
         return await _op_edit_xml_batch(bus, operation, target_xpath, payload["ops"], window_id, valid_actions, start)
@@ -1715,6 +1776,25 @@ async def _op_edit_xml(
     )
 
 
+def _resolve_edit_files(payload: dict[str, Any]) -> dict[str, Any]:
+    """Inline `ops_path` (a JSON file: {"ops": [...]} or a list) and every op's `xml_path`."""
+    if payload.get("ops_path"):
+        data = json.loads(Path(str(payload["ops_path"])).read_text(encoding="utf-8"))
+        ops = data.get("ops") if isinstance(data, dict) else data
+        if not isinstance(ops, list):
+            raise ValueError(f"ops_path {payload['ops_path']}: expected {{'ops': [...]}} or a list")
+        payload = {**{k: v for k, v in payload.items() if k != "ops_path"}, "ops": ops}
+
+    def with_xml(op: Any) -> Any:
+        if isinstance(op, dict) and op.get("xml_path") and "xml" not in op:
+            return {**op, "xml": Path(str(op["xml_path"])).read_text(encoding="utf-8")}
+        return op
+
+    if isinstance(payload.get("ops"), list):
+        return {**payload, "ops": [with_xml(op) for op in payload["ops"]]}
+    return dict(with_xml(payload))
+
+
 async def _op_edit_xml_batch(
     bus: InkscapeDBus,
     operation: str,
@@ -1779,6 +1859,80 @@ async def _op_edit_xml_batch(
         data={"action": "batch", "saved": saved, "save_skipped_reason": save_note, **result.data},
         start=start,
     )
+
+
+async def _op_transplant(
+    bus: InkscapeDBus, operation: str, target: str, payload: str, window_id: int, config: Any, start: float
+) -> dict[str, Any]:
+    """Put a re-plotted group in place of its older, hand-styled version (see transplant.py).
+
+    payload (JSON):
+      source      — id of the new plot (pasted anywhere, usually off the page)
+      target      — id of the old, restyled plot it replaces (or pass it as `target`)
+      park        — keep the old plot, moved to where the new one was (default true)
+      skip        — ids of old-plot objects not to carry over
+      glyph_text  — {glyph-run id: "text"}: outlined text in the new plot to turn into real text
+      text_style  — CSS for those texts, e.g. "font-family:Calibri;font-size:10.6667px"
+      check       — report what would happen and write the new group to a file; change nothing
+      preview     — render the result in place (as the preview op) instead of applying it
+    One undo step when applied.
+    """
+    from .. import transplant
+
+    try:
+        args = json.loads(payload) if payload else {}
+    except json.JSONDecodeError as exc:
+        return _result(operation, False, f"payload is not valid JSON: {exc}", error=str(exc), start=start)
+    source, old = str(args.get("source", "")).lstrip("#"), str(args.get("target") or target).lstrip("#")
+    if not source or not old:
+        return _result(operation, False, "payload needs source and target ids", error="bad payload", start=start)
+
+    scratch = _scratch_path()
+    await _export_document_async(bus, scratch)
+    try:
+        plan = transplant.plan(
+            scratch.read_bytes(),
+            source,
+            old,
+            park=bool(args.get("park", True)),
+            skip=list(args.get("skip", [])),
+            glyph_text=dict(args.get("glyph_text", {})),
+            text_style=str(args.get("text_style", "")),
+        )
+    except transplant.TransplantError as exc:
+        return _result(operation, False, str(exc), error="transplant", start=start)
+    report = {
+        "mode": plan.mode,
+        "shift": [round(v, 3) for v in plan.shift],
+        "styled": plan.styled,
+        "dropped": plan.dropped,
+        "copied": plan.extras,
+        "outlined_text": plan.outlined_text,
+    }
+    if args.get("check") or args.get("preview"):
+        xml_path = scratch.with_name(f"transplant-{re.sub(r'[^A-Za-z0-9_-]', '_', source)}.svg")
+        xml_path.write_text(plan.new_xml, encoding="utf-8")
+        report["xml_path"] = str(xml_path)
+        if args.get("check"):
+            return _result(
+                operation, True, "transplant check (nothing changed): " + plan.summary(), data=report, start=start
+            )
+        shown = await _op_preview(
+            bus,
+            operation,
+            old,
+            json.dumps({"xml": plan.new_xml, "replace": old, "dpi": args.get("dpi", 300)}),
+            config,
+            start,
+        )
+        shown["message"] = "transplant preview (nothing changed): " + plan.summary() + "\n" + shown["message"]
+        shown["data"] = {**shown.get("data", {}), **report}
+        return shown
+    applied = await _op_edit_xml(bus, operation, "", json.dumps({"ops": plan.ops}), window_id, start)
+    if applied["success"]:
+        applied["message"] = f"transplanted #{source} into #{old}'s place: " + plan.summary()
+        applied["data"] = {**applied.get("data", {}), **report}
+    return applied
 
 
 async def _op_path_edit(
@@ -2098,7 +2252,7 @@ async def inkscape_live(
 
     try:
         if operation == "get_document_xml":
-            return await _op_get_document_xml(bus, operation, start)
+            return await _op_get_document_xml(bus, operation, target, start)
         if operation == "get_selection":
             return await _op_get_selection(bus, operation, start)
         if operation == "set_selection":
@@ -2126,6 +2280,8 @@ async def inkscape_live(
             return await _op_outline(bus, operation, target, start)
         if operation == "edit_xml":
             return await _op_edit_xml(bus, operation, target, payload, window_id, start)
+        if operation == "transplant":
+            return await _op_transplant(bus, operation, target, payload, window_id, config, start)
         if operation == "path_edit":
             return await _op_path_edit(bus, operation, target, payload, window_id, start)
         if operation == "path_offset":
