@@ -37,9 +37,27 @@ def _fp(**kwargs):
     return ct.fingerprint(_svg(**kwargs))
 
 
+_REAL_SELECTION_NOTE = ct._selection_note
+
+
 @pytest.fixture(autouse=True)
 def _baseline(tmp_path, monkeypatch):
     monkeypatch.setattr(ct, "BASELINE_FILE", tmp_path / "baseline.json")
+    monkeypatch.setattr(ct, "_selection_note", lambda svg: "")  # never read the real Inkscape
+
+
+def test_hook_prompt_names_the_selection(monkeypatch, capsys):
+    from inkscape_mcp import selection_probe
+
+    _, elements = _fp()
+    ct.save_baseline("fig.svg", elements)
+    monkeypatch.setattr(ct, "_selection_note", _REAL_SELECTION_NOTE)
+    monkeypatch.setattr(ct, "snapshot_live", _svg)
+    monkeypatch.setattr(ct, "_passive_bus", lambda: object())
+    monkeypatch.setattr(selection_probe, "selected_ids", lambda bus: ["body"])
+    assert ct.main(["hook-prompt"]) == 0
+    context = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert context.startswith("Selected in Inkscape now:\nbody  rect  x 41..69")
 
 
 def test_fingerprint_skips_view_state_and_folds_text():

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import copy
 import json
 import os
@@ -343,6 +344,10 @@ async def _export_document_async(bus: InkscapeDBus, scratch: Path) -> None:
     """
     from ..extension_bridge import BRIDGE_LOCK
 
+    cached = _SNAPSHOT_CACHE.get("bytes")
+    if _SNAPSHOT_REUSE.get() and cached and time.monotonic() - _SNAPSHOT_CACHE["at"] < _SNAPSHOT_TTL_S:
+        scratch.write_bytes(cached)  # a read-only call right after another: same document
+        return
     async with BRIDGE_LOCK:
         if scratch.exists():
             scratch.unlink()
@@ -351,9 +356,20 @@ async def _export_document_async(bus: InkscapeDBus, scratch: Path) -> None:
         deadline = time.monotonic() + _EXPORT_POLL_TIMEOUT_S
         while time.monotonic() < deadline:
             if scratch.exists() and scratch.stat().st_size > 0:
+                if _SNAPSHOT_REUSE.get():
+                    _SNAPSHOT_CACHE.update(bytes=scratch.read_bytes(), at=time.monotonic())
                 return
             await asyncio.sleep(_EXPORT_POLL_INTERVAL_S)
         raise TimeoutError(f"Inkscape did not produce {scratch} within {_EXPORT_POLL_TIMEOUT_S}s")
+
+
+# Back-to-back read-only calls (outline, then preview, then rasterize) share one export: a large
+# figure takes a second or more to export each time. Any other operation clears the cache, and
+# the TTL bounds how long a user's edit in the GUI could go unseen.
+_SNAPSHOT_TTL_S = 3.0
+_SNAPSHOT_CACHE: dict[str, Any] = {}
+_SNAPSHOT_REUSE: contextvars.ContextVar[bool] = contextvars.ContextVar("snapshot_reuse", default=False)
+_READ_ONLY_OPS = frozenset({"outline", "get_document_xml", "preview", "rasterize", "selection", "changes"})
 
 
 _SERVER_STARTED = time.time()
@@ -911,6 +927,9 @@ def _op_open_file(bus: InkscapeDBus, operation: str, target: str, start: float) 
             start=start,
         )
     bus.open_file(target)
+    from .live_figure import remember_path
+
+    remember_path(target)  # Inkscape does not report a document's file over D-Bus; `save` needs it
     return _result(operation, True, f"requested open of {target!r}", data={"path": target}, start=start)
 
 
@@ -1707,6 +1726,19 @@ async def _op_edit_xml(
     except (OSError, ValueError) as exc:
         return _result(operation, False, str(exc), error="bad path", start=start)
 
+    if payload.pop("render", False):  # before/after picture of what the edit touched
+        from . import live_figure
+
+        before = await live_figure.snapshot()
+        ops = payload["ops"] if "ops" in payload else [{**payload, "xpath": target_xpath}]
+        edited = await _op_edit_xml(bus, operation, target_xpath, json.dumps(payload), window_id, start)
+        if edited["success"]:
+            shown = await live_figure.before_after(None, before, live_figure.ids_touched(ops))
+            edited["data"] = {**edited.get("data", {}), **shown}
+            if shown.get("render"):
+                edited["message"] += f"; before|after: {shown['render']}"
+        return edited
+
     if "ops" in payload:
         return await _op_edit_xml_batch(bus, operation, target_xpath, payload["ops"], window_id, valid_actions, start)
     if not target_xpath:
@@ -1929,9 +1961,14 @@ async def _op_transplant(
         shown["message"] = "transplant preview (nothing changed): " + plan.summary() + "\n" + shown["message"]
         shown["data"] = {**shown.get("data", {}), **report}
         return shown
-    applied = await _op_edit_xml(bus, operation, "", json.dumps({"ops": plan.ops}), window_id, start)
+    edit = {"ops": plan.ops, "render": bool(args.get("render"))}
+    applied = await _op_edit_xml(bus, operation, "", json.dumps(edit), window_id, start)
     if applied["success"]:
-        applied["message"] = f"transplanted #{source} into #{old}'s place: " + plan.summary()
+        applied["message"] = (
+            f"transplanted #{source} into #{old}'s place: "
+            + plan.summary()
+            + (f"; before|after: {applied['data']['render']}" if applied.get("data", {}).get("render") else "")
+        )
         applied["data"] = {**applied.get("data", {}), **report}
     return applied
 
@@ -2191,6 +2228,9 @@ async def inkscape_live(
 ) -> dict[str, Any]:
     """Drive a running Inkscape GUI via D-Bus + clipboard staging."""
     start = time.perf_counter()
+    _SNAPSHOT_REUSE.set(operation in _READ_ONLY_OPS)
+    if operation not in _READ_ONLY_OPS:
+        _SNAPSHOT_CACHE.clear()
     try:
         bus = _get_bus(config)
     except Exception as exc:
@@ -2219,6 +2259,9 @@ async def inkscape_live(
         launch_path = None
         if mac_bus_manager.is_macos() and operation == "open_file" and os.path.isabs(target) and os.path.isfile(target):
             launch_path = target
+            from .live_figure import remember_path
+
+            remember_path(target)
         try:
             ready = _auto_launch_inkscape(config, open_path=launch_path)
         except Exception as exc:
@@ -2317,6 +2360,18 @@ async def inkscape_live(
             return await _op_outline(bus, operation, target, start)
         if operation == "edit_xml":
             return await _op_edit_xml(bus, operation, target, payload, window_id, start)
+        if operation in ("selection", "save", "label", "organize", "parked"):
+            from . import live_figure
+
+            if operation == "selection":
+                return await live_figure.op_selection(bus, operation, payload, config, start)
+            if operation == "save":
+                return await live_figure.op_save(bus, operation, payload, start)
+            if operation == "label":
+                return await live_figure.op_label(bus, operation, payload, window_id, config, start)
+            if operation == "organize":
+                return await live_figure.op_organize(bus, operation, payload, window_id, config, start)
+            return await live_figure.op_parked(bus, operation, payload, window_id, config, start)
         if operation == "transplant":
             return await _op_transplant(bus, operation, target, payload, window_id, config, start)
         if operation == "path_edit":
@@ -2343,10 +2398,14 @@ async def inkscape_live(
             return await _op_preview(bus, operation, target, payload, config, start)
         if operation == "rasterize":
             return await _op_rasterize(bus, operation, target, payload, cli_wrapper, config, start)
+        from typing import get_args
+
+        from ..mcp_tool_types import InkscapeLiveOperation
+
         return _result(
             operation,
             False,
-            f"unknown operation {operation!r}",
+            f"unknown operation {operation!r}; valid: {', '.join(get_args(InkscapeLiveOperation))}",
             error="unknown operation",
             start=start,
         )

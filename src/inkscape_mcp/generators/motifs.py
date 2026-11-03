@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import random
+import re
 from typing import Any
 from xml.sax.saxutils import escape
 
@@ -701,3 +702,70 @@ def protein_globule(
         c.group(f"{gid}-domains", "domains", "".join(lobe_paths), f' clip-path="url(#{gid}-clip)"'),
     ]
     return c.group(gid, "protein (space-filling)", "".join(parts))
+
+
+_MATH_TOKEN = re.compile(r"_\{([^}]*)\}|_([A-Za-z0-9]+)|(\*[^*]+\*)|([A-Za-z]+)|([Ͱ-Ͽ])|([^A-Za-z_*Ͱ-Ͽ]+)")
+
+
+def math_runs(text: str) -> list[tuple[str, str]]:
+    """Split maths into (kind, text) runs: 'italic', 'sub' (upright) or 'plain'.
+
+    Variables are italic: Greek letters and single Latin letters; Latin words of two or more
+    letters stay upright ("mRNA", "max"). `_x` or `_{text}` is an upright subscript; `*text*`
+    forces italic. So "\u03c3_off = 3" (sigma) -> italic sigma, subscript "off", plain " = 3".
+    """
+    runs: list[tuple[str, str]] = []
+    for m in _MATH_TOKEN.finditer(text):
+        sub_braced, sub_word, forced, latin, greek, other = m.groups()
+        if sub_braced is not None or sub_word is not None:
+            runs.append(("sub", sub_braced if sub_braced is not None else sub_word))
+        elif forced:
+            runs.append(("italic", forced[1:-1]))
+        elif latin:
+            runs.append(("italic" if len(latin) == 1 else "plain", latin))
+        elif greek:
+            runs.append(("italic", greek))
+        else:
+            runs.append(("plain", other))
+    merged: list[tuple[str, str]] = []
+    for kind, part in runs:  # adjacent runs of one kind become one tspan
+        if merged and merged[-1][0] == kind:
+            merged[-1] = (kind, merged[-1][1] + part)
+        else:
+            merged.append((kind, part))
+    return merged
+
+
+@generator(
+    "annotation",
+    choices={"anchor": ["start", "middle", "end"]},
+    ranges={"size": (1, 60)},
+    docs={
+        "text": "maths, e.g. 'G_on', 'N_{0}+1', Greek letters as typed; *x* forces italic",
+        "size": "font size; 0 = the style's math size",
+        "color": "token path or colour",
+    },
+)
+def math_label(
+    gid: str,
+    style: dict[str, Any],
+    x: float,
+    y: float,
+    text: str,
+    size: float = 0.0,
+    anchor: str = "start",
+    color: str = "ink",
+) -> str:
+    """A maths label in the figure convention: italic variables, upright subscripts, Arial."""
+    font = style["font"]
+    size = size or font["math_size"]
+    spans = []
+    for kind, part in math_runs(text):
+        css = {"italic": "font-style:italic", "sub": "font-size:65%;baseline-shift:sub", "plain": ""}[kind]
+        spans.append(f'<tspan style="{css}">{escape(part)}</tspan>' if css else escape(part))
+    return (
+        f'<text id="{gid}" inkscape:label="{escape(re.sub(r"[_{}*]", "", text))}" x="{c.f(x)}" y="{c.f(y)}" '
+        'xml:space="preserve" '
+        f'style="font-family:{font["math"]};font-size:{c.f(size)}px;text-anchor:{anchor};'
+        f'fill:{c.color(style, color)}">{"".join(spans)}</text>'
+    )

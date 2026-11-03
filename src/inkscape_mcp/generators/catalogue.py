@@ -50,6 +50,12 @@ DEMOS: dict[str, Demo] = {
         "target_y": b[1] + b[3] * 0.3,
         "text": "Burst",
     },
+    "math_label": lambda b: {
+        "x": b[0] + b[2] / 2,
+        "y": b[1] + b[3] / 2 + 3,
+        "text": "\u03c3_off = 3",
+        "anchor": "middle",
+    },
     "zoom_callout": lambda b: {
         "x1": b[0] + 12,
         "y1": b[1] + b[3] * 0.65,
@@ -76,6 +82,7 @@ VARIANTS: dict[str, list[dict[str, Any]]] = {
     "panel": [{"title": "Telegraph model"}, {"title": ""}, {"title": "Poisson", "fill": "#f4f5ff"}],
     "label_pill": [{}, {"text": "Cell-cell interactions", "size": 3}, {"text": "Burst size", "side": "left"}],
     "zoom_callout": [{}, {"r2": 8}, {"lens_fill": "#f7f7f7"}],
+    "math_label": [{}, {"text": "G_on"}, {"text": "\u03c1V / N_{0}"}],
     "ridge_plot": [{}, {"count": 8, "overlap": 1.6}, {"color": "plot.fit", "axes": False}],
     "hex_cells": [{"pick": "alternate", "spacing": 3}, {"pick": "spaced", "spacing": 3}, {"pick": "all", "spacing": 3}],
     "iso_box": [

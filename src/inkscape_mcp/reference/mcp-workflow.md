@@ -96,6 +96,29 @@ file (`{"ops": [...]}` or a bare list), and any op (or a single edit) may give `
 instead of `"xml"`. Read large XML the same way: `get_document_xml` with `target=<id>` returns
 one subtree, and anything over 40 KB comes back as a file path, not inline.
 
+### Selection, saving and tidying in one call each
+
+- `selection` — what the user selected: ids, a short outline of each and one render (`png`).
+  When the server launched Inkscape it reads Inkscape's `select-list` output: no undo entry.
+  The prompt hook then also lists the selection on every message ("Selected in Inkscape now").
+- `edit_xml` / `transplant` with `"render": true` return `render`: before|after, side by side,
+  framed on the ids the edit names — no separate rasterize and crop.
+- `save` — writes the active document to its file even with several windows open (Inkscape
+  only saves from a window). The file is remembered from `open_file`; otherwise pass
+  `{"path": "/abs/file.svg"}`. The previous file goes to `~/.cache/inkscape_mcp/backups/`.
+- `label` — plain-word labels: texts by content, outlined text, arrows by what they connect
+  (`arrow: Translation → Protein (k)`, a text beside the middle in brackets), groups by their main
+  text. Proximity-based, so `check` first; `relabel: ["arrow"]` renames generic labels.
+- `organize` — `{"layers": [{"label": "Panel A", "area": [x0, y0, x1, y1]}, …]}` sorts top-level
+  objects into layers by where their centre falls (Inkscape's measured boxes), flattens
+  single-child wrapper groups and labels; applied only if the page renders pixel-identical.
+- `parked` — objects entirely off the page; `{"delete": true}` removes them.
+- `component` kind `math_label` writes maths in the figure convention: `"σ_off = 3"`, `"G_on"`,
+  `"N_{0}+1"` → italic variables, upright subscripts, Arial at the style's maths size.
+
+Edits to these modules take effect on the next call (they reload when their files change);
+`ping` says when a restart is still needed for other parts of the server.
+
 ### Swapping in a re-plotted figure part (`transplant`)
 
 When a plot's data changes, paste the new export anywhere (off the page is fine) and let

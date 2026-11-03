@@ -50,6 +50,7 @@ _MAX_LINES = 30
 _MAX_VALUE = 60
 _HOOK_TIMEOUT_S = 8.0
 _MAX_ADDED_OUTLINES = 3
+_MAX_SELECTION_LINES = 8
 _ADDED_OUTLINE_LINES = 25
 _OUTLINE_INTRO = (
     "Outline of the figure open in Inkscape (refresh with inkscape_live operation=outline; "
@@ -333,6 +334,31 @@ def _added_outlines(svg_bytes: bytes, added: list[str]) -> str:
     return "\n\nAdded, as outlined (refresh with inkscape_live operation=outline target=<id>):\n" + "\n".join(parts)
 
 
+def _selection_note(svg_bytes: bytes) -> str:
+    """What is selected in Inkscape right now (one outline line each), or ''.
+
+    Read through select-list, which leaves no undo entry; only possible when the server
+    launched Inkscape (its output is captured). Users often say "the selected objects".
+    """
+    from . import selection_probe
+    from .figure_outline import outline
+
+    bus = _passive_bus()
+    if bus is None:
+        return ""
+    ids = _with_timeout(lambda: selection_probe.selected_ids(bus), 2.0)
+    if not ids:
+        return ""
+    lines = []
+    for i in ids[:_MAX_SELECTION_LINES]:
+        try:
+            lines.append(outline(svg_bytes, i, 1).split("\n")[1].strip())
+        except Exception:  # a missing id is still named
+            lines.append(i)
+    more = f"\n… and {len(ids) - _MAX_SELECTION_LINES} more" if len(ids) > _MAX_SELECTION_LINES else ""
+    return "Selected in Inkscape now:\n" + "\n".join(lines) + more
+
+
 def _hook_output(event: str, context: str) -> str:
     return json.dumps({"hookSpecificOutput": {"hookEventName": event, "additionalContext": context}})
 
@@ -381,8 +407,13 @@ def main(argv: list[str]) -> int:
     report = format_report(result)
     if command == "report":
         print(report or "no changes")
-    elif report:
-        print(_hook_output("UserPromptSubmit", report + _added_outlines(svg_bytes, result.get("added", []))))
+        return 0
+    if report:
+        report += _added_outlines(svg_bytes, result.get("added", []))
+    selection = _selection_note(svg_bytes)
+    context = "\n\n".join(part for part in (report, selection) if part)
+    if context:
+        print(_hook_output("UserPromptSubmit", context))
     return 0
 
 

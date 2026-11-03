@@ -208,16 +208,22 @@ def ensure_inkscape(address: str, inkscape_executable: str, open_path: str | Non
     argv = [inkscape_executable, open_path or default_canvas()]
 
     log.info("Launching Inkscape under MCP session bus: %s", argv)
-    subprocess.Popen(  # noqa: S603 — inkscape path validated above
-        argv,
-        env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        stdin=subprocess.DEVNULL,
-        start_new_session=True,
-        close_fds=True,
-        preexec_fn=_cap_open_files,
-    )
+    # Inkscape's stdout goes to a log so print-style actions (select-list) can be read back.
+    from .selection_probe import OUTPUT_LOG, record_launch
+
+    OUTPUT_LOG.parent.mkdir(parents=True, exist_ok=True)
+    with OUTPUT_LOG.open("wb") as out:  # truncated per launch; the child keeps its own handle
+        proc = subprocess.Popen(  # noqa: S603 — inkscape path validated above
+            argv,
+            env=env,
+            stdout=out,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+            preexec_fn=_cap_open_files,
+        )
+    record_launch(proc.pid)
 
     deadline = time.monotonic() + _INKSCAPE_REGISTER_TIMEOUT_S
     while time.monotonic() < deadline:

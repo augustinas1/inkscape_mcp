@@ -25,7 +25,6 @@ from .mcp_tool_types import (
     InkscapeExtensionOperation,
     InkscapeFileOperation,
     InkscapeGradientOperation,
-    InkscapeLiveOperation,
     InkscapeMetadataOperation,
     InkscapeSystemOperation,
     InkscapeVectorOperation,
@@ -35,7 +34,6 @@ from .tools import inkscape_analysis as inkscape_analysis_tool
 from .tools import inkscape_extension as inkscape_extension_tool
 from .tools import inkscape_file as inkscape_file_tool
 from .tools import inkscape_gradient as inkscape_gradient_tool
-from .tools import inkscape_live as inkscape_live_tool
 from .tools import inkscape_metadata as inkscape_metadata_tool
 from .tools import inkscape_system as inkscape_system_tool
 from .tools import inkscape_vector as inkscape_vector_tool
@@ -648,7 +646,7 @@ class InkscapeMCPServer:
             ),
         )
         async def inkscape_live(
-            operation: InkscapeLiveOperation,
+            operation: str,
             target: str = "",
             payload: str = "",
             window_id: int = 0,
@@ -717,9 +715,12 @@ class InkscapeMCPServer:
             Operations: ping, get_document_xml, get_selection, set_selection, insert_svg,
             delete_selected, apply_action, list_actions, open_file, save_snapshot, changes, outline,
             edit_xml, path_edit, inspect_selection/layers/defs/view/pages/element,
-            execute_inkex, rasterize, preview, component, transplant.
+            execute_inkex, rasterize, preview, component, transplant, selection, save,
+            label, organize, parked.
             """
-            return await inkscape_live_tool(
+            from .tools.hot_reload import live_entry
+
+            result: dict[str, Any] = await live_entry()(  # picks up edited live modules without a reconnect
                 operation=operation,
                 target=target,
                 payload=payload,
@@ -727,6 +728,7 @@ class InkscapeMCPServer:
                 cli_wrapper=self.cli_wrapper,
                 config=self.config,
             )
+            return result
 
         @self.mcp.tool(
             annotations=ToolAnnotations(

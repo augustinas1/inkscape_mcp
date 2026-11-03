@@ -127,6 +127,11 @@ InkscapeLiveOperation = Literal[
     "preview",
     "component",
     "transplant",
+    "selection",
+    "save",
+    "label",
+    "organize",
+    "parked",
     # GUI-only: Inkscape's offset machinery does not compute headlessly, so the
     # inkscape_vector operation of the same name refuses and points here.
     "path_offset",

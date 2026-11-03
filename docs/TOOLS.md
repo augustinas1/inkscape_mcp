@@ -134,7 +134,15 @@ Drive a running Inkscape window via D-Bus + clipboard staging. 20
 operations. Highlights:
 
 - **Bridge:** `ping`.
-- **Selection:** `get_selection`, `set_selection`, `delete_selected`.
+- **Selection:** `selection` — ids, an outline of each and one render, in one call; read with
+  Inkscape's `select-list`, so no undo entry when the server launched Inkscape (else falls back
+  to the inspect extension). Also `get_selection`, `set_selection`, `delete_selected`.
+- **Saving:** `save` — writes the active document to its file (known for files opened with
+  `open_file`, else payload `path`), with a backup; works with several windows open.
+- **Tidying:** `label` (plain-word labels for unlabelled elements, arrows named by what they
+  connect; `relabel` renames generic ones), `organize` (flatten wrapper chains, sort objects into
+  layers by area, label — applied only if the render is pixel-identical), `parked` (list or delete
+  objects entirely off the page), `cleanup`.
 - **Document:** `get_document_xml` (`target` = an id returns that subtree; XML over 40 KB comes
   back as a file path), `open_file`, `save_snapshot`.
 - **Hand-off:** `changes` — what the user edited in Inkscape since the last check (added,
@@ -146,7 +154,8 @@ operations. Highlights:
   typical figure is ~2–3 KB, so read it before `get_document_xml` when looking for an object.
   No undo step.
 - **Editing:** `apply_action`, `insert_svg`, `edit_xml` (batches as one undo step; large batches
-  from a file with `ops_path`, fragments with `xml_path`), `path_edit`.
+  from a file with `ops_path`, fragments with `xml_path`; `"render": true` returns a before|after
+  picture of what changed), `path_edit`.
 - **Re-plotted data:** `transplant` — put a new matplotlib plot (`source`) in place of its older,
   hand-restyled version (`target`): axes aligned, the old plot's styles copied element by element,
   plot parts the old one no longer has dropped, hand-made objects (real text, legend boxes)
