@@ -22,8 +22,9 @@ OUTPUT_LOG = Path(os.path.expanduser("~/.cache/inkscape_mcp/inkscape-output.log"
 # open_file, read by `save` and by the hooks to tell whether the figure belongs to a project.
 DOC_PATHS = Path(os.path.expanduser("~/.cache/inkscape_mcp/doc-paths.json"))
 _PID_FILE = OUTPUT_LOG.with_suffix(".pid")
-_QUIET_S = 0.15  # output is complete once it stops growing for this long
-_TIMEOUT_S = 0.5  # an empty selection prints nothing: give up waiting after this
+# The D-Bus activate returns after the action ran, and its output is already in the log by
+# then (measured); one short re-check covers a late flush. An empty selection prints nothing.
+_RECHECK_S = 0.02
 
 
 def record_launch(pid: int) -> None:
@@ -57,15 +58,8 @@ def selected_ids(bus: Any) -> list[str] | None:
         return None
     offset = OUTPUT_LOG.stat().st_size
     bus.activate("select-list", None, scope="app")
-    deadline = time.monotonic() + _TIMEOUT_S
-    size, changed = offset, time.monotonic()
-    while time.monotonic() < deadline:
-        now = OUTPUT_LOG.stat().st_size
-        if now != size:
-            size, changed = now, time.monotonic()
-        elif size > offset and time.monotonic() - changed >= _QUIET_S:
-            break
-        time.sleep(0.03)
+    if OUTPUT_LOG.stat().st_size == offset:
+        time.sleep(_RECHECK_S)
     with OUTPUT_LOG.open("rb") as fh:
         fh.seek(offset)
         return parse(fh.read().decode("utf-8", errors="replace"))

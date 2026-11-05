@@ -16,7 +16,7 @@ from typing import Any
 from lxml import etree
 from pydantic import BaseModel
 
-from .. import bus_manager, mac_bus_manager
+from .. import bus_manager, change_tracker, mac_bus_manager
 from ..clipboard import SVG_NS
 from ..dbus_client import InkscapeDBus, MacInkscapeDBus
 from ..extension_bridge import invoke_extension
@@ -370,6 +370,20 @@ _SNAPSHOT_TTL_S = 3.0
 _SNAPSHOT_CACHE: dict[str, Any] = {}
 _SNAPSHOT_REUSE: contextvars.ContextVar[bool] = contextvars.ContextVar("snapshot_reuse", default=False)
 _READ_ONLY_OPS = frozenset({"outline", "get_document_xml", "preview", "rasterize", "selection", "changes"})
+# Operations that leave the drawing as it is (the selection, the view or a file aside), and
+# those whose every change goes through edit_xml (so a check-only run changes nothing).
+_NO_DOC_CHANGE = _READ_ONLY_OPS | {
+    "ping", "get_selection", "set_selection", "list_actions", "save_snapshot", "save",
+    "inspect_selection", "inspect_layers", "inspect_defs", "inspect_view", "inspect_pages", "inspect_element",
+}  # fmt: skip
+_EDITS_VIA_EDIT_XML = frozenset({"edit_xml", "transplant", "organize", "label", "cleanup", "parked", "component"})
+
+# Each Inkscape CLI call is a fresh ~0.5 s process: independent ones run together, three at most.
+_CLI_SLOTS = asyncio.Semaphore(3)
+
+# Per live operation: how many edit_xml runs were folded into the change baseline, and how many
+# were not. An operation that changed the document without a clean fold marks the baseline dirty.
+_EDIT_FOLDS: contextvars.ContextVar[dict[str, int] | None] = contextvars.ContextVar("edit_folds", default=None)
 
 
 _SERVER_STARTED = time.time()
@@ -1387,17 +1401,18 @@ async def _run_png_export(cmd: list[str], out_path: Path) -> str:
     """Run an Inkscape CLI export; return '' on success or a failure message."""
     # asyncio subprocess rather than subprocess.run: a 60s blocking wait here froze every
     # other in-flight tool call (this runs on the request path).
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=60)
-    except TimeoutError:
-        proc.kill()
-        await proc.wait()
-        return "inkscape export timed out after 60s"
+    async with _CLI_SLOTS:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=60)
+        except TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return "inkscape export timed out after 60s"
     if proc.returncode != 0 or not out_path.exists():
         stderr_tail = (stderr_b or b"").decode("utf-8", errors="replace")[-1000:]
         return f"inkscape export failed (rc={proc.returncode}); stderr: {stderr_tail}"
@@ -1409,18 +1424,19 @@ async def _query_box(exe: str, svg_path: Path, element_id: str, svg_bytes: bytes
     import inkex
 
     try:
-        proc = await asyncio.create_subprocess_exec(
-            exe,
-            f"--query-id={element_id}",
-            "--query-x",
-            "--query-y",
-            "--query-width",
-            "--query-height",
-            str(svg_path),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
+        async with _CLI_SLOTS:
+            proc = await asyncio.create_subprocess_exec(
+                exe,
+                f"--query-id={element_id}",
+                "--query-x",
+                "--query-y",
+                "--query-width",
+                "--query-height",
+                str(svg_path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
         x, y, w, h = (float(v) for v in out.decode().split()[:4])
     except (OSError, ValueError, TimeoutError):
         return None
@@ -1533,7 +1549,7 @@ async def _op_preview(
     renders = {"after": (after_svg, draft)}
     if args.get("before", bool(replace_id and frags)):
         renders["before"] = (before_svg, original)
-    paths: dict[str, str] = {}
+    jobs: list[tuple[str, Path, list[str]]] = []
     for name, (svg_path, data) in renders.items():
         svg_path.write_bytes(data)
         png = svg_path.with_suffix(".png")
@@ -1546,7 +1562,10 @@ async def _op_preview(
             f"--export-dpi={dpi}",
             str(svg_path),
         ]
-        failure = await _run_png_export(cmd, png)
+        jobs.append((name, png, cmd))
+    failures = await asyncio.gather(*(_run_png_export(cmd, png) for _, png, cmd in jobs))
+    paths: dict[str, str] = {}
+    for (name, png, cmd), failure in zip(jobs, failures, strict=True):
         if failure:
             return _result(operation, False, failure, data={"argv": cmd}, error="export failed", start=start)
         paths[name] = str(png)
@@ -1733,7 +1752,12 @@ async def _op_edit_xml(
         ops = payload["ops"] if "ops" in payload else [{**payload, "xpath": target_xpath}]
         edited = await _op_edit_xml(bus, operation, target_xpath, json.dumps(payload), window_id, start)
         if edited["success"]:
-            shown = await live_figure.before_after(None, before, live_figure.ids_touched(ops))
+            after = None
+            if _LAST_EDIT:  # the plugin's own copy of the edited document: no second export
+                after_path = _scratch_path()
+                after_path.write_bytes(_LAST_EDIT[0])
+                after = (after_path, _LAST_EDIT[0])
+            shown = await live_figure.before_after(None, before, live_figure.ids_touched(ops), after)
             edited["data"] = {**edited.get("data", {}), **shown}
             if shown.get("render"):
                 edited["message"] += f"; before|after: {shown['render']}"
@@ -1788,6 +1812,7 @@ async def _op_edit_xml(
             start=start,
         )
 
+    await _after_edit()
     # Persist the in-memory mutation to disk so re-reads see current state.
     # Honours the same kill switch as Pattern A: INKSCAPE_MCP_AUTO_SAVE=0 to skip.
     saved, save_note = _save_active_document(bus, window_id)
@@ -1807,6 +1832,34 @@ async def _op_edit_xml(
         },
         start=start,
     )
+
+
+_LAST_EDIT: list[bytes] = []  # [after] of the latest successful edit_xml run, when the plugin wrote it
+
+
+async def _after_edit() -> None:
+    """Use the files the edit plugin left after a successful run: the edited document seeds the
+    snapshot cache (the next read-only call skips its export) and the edit is folded into the
+    change baseline. Counts a run it could not fold, so the operation marks the baseline dirty."""
+    from ..extension_bridge import EXCHANGE_DIR
+
+    _LAST_EDIT.clear()
+    try:  # read in one go, before anything yields: the next extension run replaces these files
+        before = (EXCHANGE_DIR / "before.svg").read_bytes()
+        after = (EXCHANGE_DIR / "after.svg").read_bytes()
+    except OSError:
+        before = after = b""
+    folded = False
+    if before and after:
+        _LAST_EDIT.append(after)
+        _SNAPSHOT_CACHE.update(bytes=after, at=time.monotonic())
+        try:
+            folded = await asyncio.to_thread(change_tracker.fold_edit, before, after)
+        except Exception:  # the baseline is a nicety: a doc it cannot read just gets re-marked
+            folded = False
+    folds = _EDIT_FOLDS.get()
+    if folds is not None:
+        folds["folded" if folded else "missed"] += 1
 
 
 def _resolve_edit_files(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1884,6 +1937,7 @@ async def _op_edit_xml_batch(
             start=start,
         )
 
+    await _after_edit()
     saved, save_note = _save_active_document(bus, window_id)
     return _result(
         operation,
@@ -2227,6 +2281,27 @@ async def inkscape_live(
     **kwargs: Any,
 ) -> dict[str, Any]:
     """Drive a running Inkscape GUI via D-Bus + clipboard staging."""
+    folds = {"folded": 0, "missed": 0}
+    token = _EDIT_FOLDS.set(folds)
+    try:
+        return await _inkscape_live(operation, target, payload, window_id, cli_wrapper, config, **kwargs)
+    finally:
+        _EDIT_FOLDS.reset(token)
+        # Edits that went through edit_xml are already in the change baseline; any other
+        # operation that may have changed the document leaves hook-stop to re-export it.
+        if folds["missed"] or (operation not in _NO_DOC_CHANGE and operation not in _EDITS_VIA_EDIT_XML):
+            change_tracker.mark_dirty()
+
+
+async def _inkscape_live(
+    operation: str,
+    target: str,
+    payload: str,
+    window_id: int,
+    cli_wrapper: Any,
+    config: Any,
+    **kwargs: Any,
+) -> dict[str, Any]:
     start = time.perf_counter()
     _SNAPSHOT_REUSE.set(operation in _READ_ONLY_OPS)
     if operation not in _READ_ONLY_OPS:

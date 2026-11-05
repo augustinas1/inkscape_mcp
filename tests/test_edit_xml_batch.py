@@ -177,3 +177,31 @@ async def test_missing_ops_file_is_a_clear_error(mock_invoke, tmp_path):
     res = await _run("", {"ops_path": str(tmp_path / "nope.json")})
     assert res["success"] is False and "nope.json" in res["message"]
     mock_invoke.assert_not_awaited()
+
+
+def _run_effect(plugin, tmp_path, monkeypatch, spec):
+    monkeypatch.setattr(plugin, "EXCHANGE_DIR", tmp_path)
+    (tmp_path / "input.json").write_text(json.dumps(spec))
+    ext = plugin.McpEditXml()
+    ext.svg = _root()
+    ext.effect()
+    return json.loads((tmp_path / "result.json").read_text())
+
+
+def test_plugin_writes_the_document_before_and_after_on_success(plugin, tmp_path, monkeypatch):
+    (tmp_path / "after.svg").write_text("stale")
+    spec = {"xpath": "//*[@id='a']", "action": "set_attr", "name": "x", "value": "10"}
+    assert _run_effect(plugin, tmp_path, monkeypatch, spec)["ok"]
+    before = etree.fromstring((tmp_path / "before.svg").read_bytes())
+    after = etree.fromstring((tmp_path / "after.svg").read_bytes())
+    assert before.find(".//*[@id='a']").get("x") == "1"
+    assert after.find(".//*[@id='a']").get("x") == "10"
+    assert (tmp_path / "after.svg").read_bytes().startswith(b"<?xml")
+
+
+def test_plugin_leaves_no_before_after_when_the_edit_fails(plugin, tmp_path, monkeypatch):
+    (tmp_path / "before.svg").write_text("stale")
+    (tmp_path / "after.svg").write_text("stale")
+    spec = {"xpath": "//*[@id='nope']", "action": "remove"}
+    assert not _run_effect(plugin, tmp_path, monkeypatch, spec)["ok"]
+    assert not (tmp_path / "before.svg").exists() and not (tmp_path / "after.svg").exists()

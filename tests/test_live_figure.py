@@ -157,7 +157,7 @@ async def test_parked_lists_and_deletes_off_page_objects(doc):
 async def test_edit_with_render_returns_a_before_after_picture(doc, monkeypatch):
     seen = {}
 
-    async def fake_before_after(config, before, ids):
+    async def fake_before_after(config, before, ids, after=None):
         seen["ids"] = ids
         return {"render": "/tmp/edit.png"}
 
@@ -267,3 +267,65 @@ async def test_organize_applies_only_when_the_render_is_identical(doc, monkeypat
     else:
         assert "12 pixel(s) would change" in res["message"]
         doc.assert_not_awaited()
+
+
+# ---- free "after" snapshot, baseline fold, concurrency ---------------------------------------
+
+
+async def test_before_after_uses_a_given_after_without_exporting(monkeypatch, tmp_path):
+    exported, rendered = [], []
+
+    async def no_export():
+        exported.append(1)
+        raise AssertionError("must not export")
+
+    async def fake_render(exe, path, data, box, png, height_px=500):
+        rendered.append(path)
+        png.write_bytes(b"")
+        return ""
+
+    monkeypatch.setattr(live_figure, "snapshot", no_export)
+    monkeypatch.setattr(live_figure, "query_all", AsyncMock(return_value={"arr": (0.0, 0.0, 10.0, 10.0)}))
+    monkeypatch.setattr(live_figure, "render_area", fake_render)
+    monkeypatch.setattr(live_figure, "stitch", lambda pngs, out: out)
+    before, after = (tmp_path / "b.svg", b"<svg/>"), (tmp_path / "a.svg", b"<svg/>")
+    res = await live_figure.before_after(MagicMock(inkscape_executable="inkscape"), before, ["arr"], after)
+    assert res["render"].endswith(".png") and exported == []
+    assert sorted(p.name for p in rendered) == ["a.svg", "b.svg"]
+
+
+async def test_edit_xml_folds_into_the_baseline_and_seeds_the_snapshot_cache(doc, monkeypatch, tmp_path):
+    from inkscape_mcp import change_tracker as ct
+
+    def svg(label):
+        return (
+            f'<svg xmlns="{SVG}" xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd" '
+            f'sodipodi:docname="fig.svg"><rect id="r" x="{label}"/></svg>'
+        ).encode()
+
+    ct.save_baseline("fig.svg", ct.fingerprint(svg("0"))[1])
+    exchange = extension_bridge.EXCHANGE_DIR
+    exchange.mkdir(parents=True)
+    (exchange / "before.svg").write_bytes(svg("0"))
+    (exchange / "after.svg").write_bytes(svg("5"))
+    live._SNAPSHOT_CACHE.clear()
+    res = await live.inkscape_live(
+        "edit_xml", "//*[@id='r']", json.dumps({"action": "set_attr", "name": "x", "value": "5"}), window_id=0
+    )
+    assert res["success"]
+    assert ct.load_baseline()["elements"]["r"]["attrs"]["x"] == "5"
+    assert live._SNAPSHOT_CACHE["bytes"] == svg("5")
+    assert not ct._DIRTY.exists()  # folded precisely: hook-stop need not export
+    live._SNAPSHOT_CACHE.clear()
+
+
+async def test_operations_without_a_fold_mark_the_baseline_dirty(doc):
+    from inkscape_mcp import change_tracker as ct
+
+    res = await live.inkscape_live(
+        "edit_xml", "//*[@id='r']", json.dumps({"action": "set_attr", "name": "x", "value": "5"}), window_id=0
+    )
+    assert res["success"] and ct._DIRTY.exists()  # no before/after files: could not fold
+    ct._DIRTY.unlink()
+    await live.inkscape_live("outline", window_id=0)
+    assert not ct._DIRTY.exists()  # read-only

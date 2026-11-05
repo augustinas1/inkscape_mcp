@@ -107,7 +107,7 @@ def page_vs_drawing_svg(tmp_path: Path) -> Path:
 
 @pytest.fixture(autouse=True)
 def _private_inkscape_output(tmp_path, monkeypatch):
-    """Never touch the real output log, pid file, remembered paths or backups (tests use fake launches)."""
+    """Never touch the real output log, pid file, remembered paths, backups, dirty marker or exchange files."""
     from inkscape_mcp import selection_probe
 
     monkeypatch.setattr(selection_probe, "OUTPUT_LOG", tmp_path / "inkscape-output.log")
@@ -117,5 +117,10 @@ def _private_inkscape_output(tmp_path, monkeypatch):
     monkeypatch.setattr(selection_probe, "DOC_PATHS", tmp_path / "doc-paths.json")
     from inkscape_mcp import change_tracker
 
+    monkeypatch.setattr(change_tracker, "BASELINE_FILE", tmp_path / "change-baseline.json")
     monkeypatch.setattr(change_tracker, "_LAST_SELECTION", tmp_path / "last-selection.json")
+    monkeypatch.setattr(change_tracker, "_DIRTY", tmp_path / "baseline-dirty")
+    from inkscape_mcp import extension_bridge
+
+    monkeypatch.setattr(extension_bridge, "EXCHANGE_DIR", tmp_path / "exchange")
     monkeypatch.setattr(live_figure, "BACKUP_DIR", tmp_path / "backups")

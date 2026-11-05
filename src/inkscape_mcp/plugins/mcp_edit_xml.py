@@ -30,6 +30,10 @@ renderers — Inkscape 1.4 included — treat the empty-string form as a
 malformed reference and silently hide the element. See the project
 plan §4 Phase 5 lessons for the discovery history.
 
+On success it also writes the whole document as received (``before.svg``) and as edited
+(``after.svg``) next to it, so the caller gets an exact "after" snapshot and the precise
+set of changed elements without an export. A failed run leaves neither file.
+
 Writes ``~/.cache/inkscape_mcp/exchange/result.json`` with either
 ``{"ok": True, "action": ..., "xpath": ..., "affected": <int>}`` on success
 or ``{"ok": False, "error": "<message>"}`` on failure. Unexpected
@@ -222,9 +226,16 @@ def run_ops(root, spec) -> dict:
     return {"ok": True, "action": "batch", "ops": len(ops), "affected": sum(counts), "affected_per_op": counts}
 
 
+def _serialize(root) -> bytes:
+    data: bytes = etree.tostring(root.getroottree(), xml_declaration=True, encoding="utf-8")
+    return data
+
+
 class McpEditXml(inkex.EffectExtension):
     def effect(self) -> None:
         EXCHANGE_DIR.mkdir(parents=True, exist_ok=True)
+        for name in ("before.svg", "after.svg"):  # stale ones would pass for this run's
+            (EXCHANGE_DIR / name).unlink(missing_ok=True)
         try:
             spec = json.loads((EXCHANGE_DIR / "input.json").read_text())
         except (OSError, json.JSONDecodeError) as exc:
@@ -234,8 +245,11 @@ class McpEditXml(inkex.EffectExtension):
         # self.svg is the <svg> root element in modern inkex; older versions
         # exposed an ElementTree. Handle both so the extension is portable.
         root = self.svg.getroot() if hasattr(self.svg, "getroot") else self.svg
+        before = _serialize(root)
         result = run_ops(root, spec)
         if result["ok"]:
+            (EXCHANGE_DIR / "before.svg").write_bytes(before)
+            (EXCHANGE_DIR / "after.svg").write_bytes(_serialize(root))
             # Name the document that was actually mutated. Inkscape runs an effect against
             # the ACTIVE desktop and offers no way to pick another, so this is the caller's
             # only way to confirm the edit landed where they intended.

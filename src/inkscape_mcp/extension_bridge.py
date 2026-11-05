@@ -78,7 +78,10 @@ VERSION_FILE = INSTALL_DIR / "VERSION"
 #     plugin result now names the document it ran against via `active_document`.
 # 12: mcp_edit_xml accepts {"ops": [...]} — a batch applied as one undo step, rehearsed on
 #     a copy first so it is all-or-nothing.
-PLUGINS_VERSION = "12"
+# 13: mcp_edit_xml also writes the document before and after the edit (before.svg,
+#     after.svg) on success, so callers get the "after" snapshot and the exact changed
+#     elements without an export.
+PLUGINS_VERSION = "13"
 
 # Used to detect whether a fresh install has been picked up by a running Inkscape.
 ECHO_ACTION = "org.inkscape.mcp.echo.noprefs"

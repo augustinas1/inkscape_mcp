@@ -63,10 +63,11 @@ def _scale(svg_bytes: bytes) -> tuple[float, float, float]:
 async def query_all(exe: str, svg_path: Path, svg_bytes: bytes) -> dict[str, Box]:
     """Inkscape's visual box of every element, in user units ({} if the CLI fails)."""
     try:
-        proc = await asyncio.create_subprocess_exec(
-            exe, "--query-all", str(svg_path), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout=120)
+        async with live._CLI_SLOTS:
+            proc = await asyncio.create_subprocess_exec(
+                exe, "--query-all", str(svg_path), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=120)
     except (OSError, TimeoutError):
         return {}
     scale, x0, y0 = _scale(svg_bytes)
@@ -154,12 +155,14 @@ async def render_ids(
         margin = 0.04 * max(whole[2] - whole[0], whole[3] - whole[1])
         failure = await render_area(exe, svg_path, svg_bytes, _pad(whole, margin), png)
         return (None if failure else png), found
-    pngs = []
-    for k, b in enumerate(found.values()):
-        png = scratch / f"{stem}-{k}.png"
-        margin = 0.04 * max(b[2] - b[0], b[3] - b[1])
-        if not await render_area(exe, svg_path, svg_bytes, _pad(b, margin), png, height_px=400):
-            pngs.append(png)
+    panels = [(scratch / f"{stem}-{k}.png", b) for k, b in enumerate(found.values())]
+    failures = await asyncio.gather(
+        *(
+            render_area(exe, svg_path, svg_bytes, _pad(b, 0.04 * max(b[2] - b[0], b[3] - b[1])), png, height_px=400)
+            for png, b in panels
+        )
+    )
+    pngs = [png for (png, _), failure in zip(panels, failures, strict=True) if not failure]
     return (stitch(pngs, scratch / f"{stem}.png") if pngs else None), found
 
 
@@ -489,15 +492,16 @@ async def _identical(exe: str, a: tuple[Path, bytes], b: tuple[Path, bytes]) -> 
     """Pixels that differ between two renders of the page (None if rendering failed)."""
     from PIL import Image, ImageChops
 
-    pngs = []
+    pngs, jobs = [], []
     for svg_path, data in (a, b):
         svg_path.write_bytes(data)
         png = svg_path.with_suffix(".png")
         cmd = [exe, str(svg_path), "--export-type=png", "--export-width=1600", "--export-area-page",
                "--export-background=white", "--export-background-opacity=1", f"--export-filename={png}"]  # fmt: skip
-        if await live._run_png_export(cmd, png):
-            return None
         pngs.append(png)
+        jobs.append(live._run_png_export(cmd, png))
+    if any(await asyncio.gather(*jobs)):
+        return None
     diff = ImageChops.difference(Image.open(pngs[0]).convert("RGB"), Image.open(pngs[1]).convert("RGB")).convert("L")
     return int(sum(diff.histogram()[1:]))
 
@@ -653,22 +657,28 @@ def ids_touched(ops: list[dict[str, Any]], limit: int = 3) -> list[str]:
     return seen
 
 
-async def before_after(config: Any, before: tuple[Path, bytes], ids: list[str]) -> dict[str, Any]:
-    """Render the area the edit touched, before and after, side by side."""
+async def before_after(
+    config: Any, before: tuple[Path, bytes], ids: list[str], after: tuple[Path, bytes] | None = None
+) -> dict[str, Any]:
+    """Render the area the edit touched, before and after, side by side.
+
+    `after` is the edited document when the caller already has it (else it is exported).
+    """
     exe = _exe(config)
-    after_path, after = await snapshot()
-    boxes_after = await query_all(exe, after_path, after)
-    boxes_before = await query_all(exe, before[0], before[1])
+    after_path, after_bytes = after if after is not None else await snapshot()
+    boxes_after, boxes_before = await asyncio.gather(
+        query_all(exe, after_path, after_bytes), query_all(exe, before[0], before[1])
+    )
     box = union([boxes_after.get(i) or boxes_before.get(i) for i in ids])  # type: ignore[misc]
     if box is None:
         return {"render_note": "nothing with a visible extent to frame"}
     box = _pad(box, 0.06 * max(box[2] - box[0], box[3] - box[1]))
     stem = f"edit-{uuid.uuid4().hex[:6]}"
-    pngs = []
-    for name, (svg_path, data) in (("before", before), ("after", (after_path, after))):
-        png = svg_path.with_name(f"{stem}-{name}.png")
-        if await render_area(exe, svg_path, data, box, png, height_px=420):
-            return {"render_note": "render failed"}
-        pngs.append(png)
+    sides = [(svg_path, data, svg_path.with_name(f"{stem}-{name}.png")) for name, (svg_path, data) in
+             (("before", before), ("after", (after_path, after_bytes)))]  # fmt: skip
+    failures = await asyncio.gather(*(render_area(exe, p, data, box, png, height_px=420) for p, data, png in sides))
+    if any(failures):
+        return {"render_note": "render failed"}
+    pngs = [png for _, _, png in sides]
     sheet = stitch(pngs, after_path.with_name(f"{stem}.png"))
     return {"render": str(sheet), "render_box": [round(v, 1) for v in box]}

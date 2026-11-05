@@ -13,11 +13,13 @@ them by more than its own error.
 
 from __future__ import annotations
 
+import functools
 import math
 import re
 from typing import Any
 
 import inkex
+from lxml import etree
 
 _SVG = "http://www.w3.org/2000/svg"
 _INK = "http://www.inkscape.org/namespaces/inkscape"
@@ -61,10 +63,22 @@ def _union(boxes: list[Box]) -> Box | None:
     )
 
 
+_raw_get = etree.ElementBase.get
+
+
+@functools.lru_cache(maxsize=4096)
+def _declarations(style: str) -> dict[str, str]:
+    """`style` as {property: value}. A plain split: inkex's `el.style` re-parses through tinycss2
+    on every access, which was 80% of a whole-document outline."""
+    pairs = (part.split(":", 1) for part in style.split(";") if ":" in part)
+    return {k.strip(): v.strip() for k, v in pairs}
+
+
 def _prop(el: Any, name: str) -> str:
     """A presentation property from the style attribute, falling back to the XML attribute."""
-    value = el.style.get(name) if el.get("style") else None
-    return str(value if value is not None else el.get(name) or "")
+    style = _raw_get(el, "style")  # inkex's own get() parses the style just to return it
+    value = _declarations(style).get(name) if style else None
+    return str(value if value is not None else _raw_get(el, name) or "")
 
 
 def _length(value: str, default: float) -> float:

@@ -7,7 +7,7 @@ memory because the parties that use it are separate processes: the MCP server (t
 `changes` live operation) and the Claude Code hooks that call this module's CLI:
 
   python -m inkscape_mcp.change_tracker hook-session  # session (re)started: outline, mark
-  python -m inkscape_mcp.change_tracker hook-stop     # agent finished: mark baseline
+  python -m inkscape_mcp.change_tracker hook-stop     # agent finished: mark baseline (skipped unless marked dirty)
   python -m inkscape_mcp.change_tracker hook-prompt   # user wrote: report changes (+ outline of added groups), re-mark
   python -m inkscape_mcp.change_tracker outline       # print the live figure outline
 
@@ -34,6 +34,9 @@ from lxml import etree
 
 BASELINE_FILE = Path(os.path.expanduser("~/.cache/inkscape_mcp/change-baseline.json"))
 _LAST_SELECTION = BASELINE_FILE.with_name("last-selection.json")
+# Present while the baseline may lack the agent's own edits: a mutating live operation that
+# could not fold its changes in precisely (see fold_edit) leaves it for hook-stop.
+_DIRTY = BASELINE_FILE.with_name("baseline-dirty")
 
 _SVG = "http://www.w3.org/2000/svg"
 _INK = "http://www.inkscape.org/namespaces/inkscape"
@@ -244,6 +247,38 @@ def save_baseline(docname: str, elements: dict[str, dict[str, Any]]) -> None:
     tmp.replace(BASELINE_FILE)
 
 
+def fold_edit(before_bytes: bytes, after_bytes: bytes) -> bool:
+    """Fold one edit into the baseline: only the elements that differ between `before_bytes`
+    and `after_bytes` change there, so the user's edits not yet reported stay reported.
+
+    False (baseline untouched) when there is no baseline or it belongs to another document.
+    """
+    baseline = load_baseline()
+    if baseline is None:
+        return False
+    docname, old = fingerprint(before_bytes)
+    after_name, new = fingerprint(after_bytes)
+    if baseline.get("doc") != docname or after_name != docname:
+        return False
+    elements = baseline["elements"]
+    for key in old.keys() - new.keys():
+        elements.pop(key, None)
+    for key, sig in new.items():
+        if old.get(key) != sig:
+            elements[key] = sig
+    save_baseline(docname, elements)
+    return True
+
+
+def mark_dirty() -> None:
+    """Ask hook-stop to re-baseline: the document changed in a way fold_edit did not cover."""
+    try:
+        _DIRTY.parent.mkdir(parents=True, exist_ok=True)
+        _DIRTY.touch()
+    except OSError:  # nicety; the next hook-prompt re-marks anyway
+        pass
+
+
 def compare(docname: str, elements: dict[str, dict[str, Any]], *, mark: bool = True) -> dict[str, Any]:
     """Diff `elements` against the stored baseline and (by default) make them the new one."""
     baseline = load_baseline()
@@ -426,6 +461,8 @@ def main(argv: list[str]) -> int:
     docs = _project_docs(project)
     if docs is not None and not docs:
         return 0
+    if command == "hook-stop" and not _DIRTY.exists():
+        return 0  # every edit since the last mark was folded into the baseline: nothing to export
     svg_bytes = _with_timeout(snapshot_live, _HOOK_TIMEOUT_S)
     if svg_bytes is None:
         return 0  # Inkscape not running / unreachable: say nothing
@@ -438,9 +475,12 @@ def main(argv: list[str]) -> int:
 
     if command in {"hook-stop", "mark"}:
         save_baseline(docname, elements)
+        if command == "hook-stop":
+            _DIRTY.unlink(missing_ok=True)
         return 0
     if command == "hook-session":
         save_baseline(docname, elements)
+        _DIRTY.unlink(missing_ok=True)
         _LAST_SELECTION.unlink(missing_ok=True)  # a new session has seen no selection yet
         outline = _outline(svg_bytes, _SESSION_OUTLINE_DEPTH)
         if outline:

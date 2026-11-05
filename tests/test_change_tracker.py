@@ -214,6 +214,7 @@ def test_hooks_say_nothing_when_inkscape_is_down(monkeypatch, capsys):
 
 def test_hook_stop_marks_baseline(monkeypatch):
     monkeypatch.setattr(ct, "snapshot_live", _svg)
+    ct.mark_dirty()
     assert ct.main(["hook-stop"]) == 0
     assert ct.load_baseline()["doc"] == "fig.svg"
 
@@ -259,3 +260,53 @@ def test_a_selection_is_reported_once(monkeypatch, capsys):
     current["ids"] = ["label"]
     ct.main(["hook-prompt"])
     assert "label  text" in capsys.readouterr().out
+
+
+def test_fold_edit_updates_only_the_elements_the_edit_changed():
+    _, base = _fp()
+    ct.save_baseline("fig.svg", base)
+    # The user moved the group (not yet reported); the agent then relabels the text.
+    before = _svg(gene_transform="translate(5,6)")
+    after = _svg(gene_transform="translate(5,6)", label="ON")
+    # Baseline is from before the user's move; fold the agent's edit on top of it.
+    assert ct.fold_edit(before, after)
+    folded = ct.load_baseline()["elements"]
+    assert folded["label"]["text"] == "ONoff"
+    assert folded["gene-off"]["attrs"] == base["gene-off"]["attrs"]  # untouched: still reported
+    result = ct.compare("fig.svg", ct.fingerprint(after)[1], mark=False)
+    assert any("gene-off" in line and "transform" in line for line in result["changes"])
+    assert not any("label" in line for line in result["changes"])  # the agent's own edit is not
+
+
+def test_fold_edit_handles_added_and_removed_elements():
+    _, base = _fp()
+    ct.save_baseline("fig.svg", base)
+    before = _svg()
+    after = _svg(extra='<rect id="new" x="1"/>')
+    assert ct.fold_edit(before, after)
+    assert "new" in ct.load_baseline()["elements"]
+    assert ct.fold_edit(after, before)
+    assert "new" not in ct.load_baseline()["elements"]
+
+
+def test_fold_edit_is_a_no_op_without_a_matching_baseline():
+    assert not ct.fold_edit(_svg(), _svg(label="ON")) and ct.load_baseline() is None
+    ct.save_baseline("other.svg", {})
+    assert not ct.fold_edit(_svg(), _svg(label="ON")) and ct.load_baseline() == {"doc": "other.svg", "elements": {}}
+
+
+def test_hook_stop_skips_the_export_unless_marked_dirty(monkeypatch):
+    exported = []
+    monkeypatch.setattr(ct, "snapshot_live", lambda: exported.append(1) or _svg())
+    assert ct.main(["hook-stop"]) == 0
+    assert exported == [] and ct.load_baseline() is None
+    ct.mark_dirty()
+    assert ct.main(["hook-stop"]) == 0
+    assert exported == [1] and ct.load_baseline()["doc"] == "fig.svg" and not ct._DIRTY.exists()
+
+
+def test_hook_session_clears_the_dirty_marker(monkeypatch, capsys):
+    monkeypatch.setattr(ct, "snapshot_live", _svg)
+    ct.mark_dirty()
+    assert ct.main(["hook-session"]) == 0
+    assert not ct._DIRTY.exists()
