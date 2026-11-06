@@ -68,6 +68,7 @@ _HUE_MERGE = 25.0  # degrees
 _NEAR_MIN, _NEAR_MAX = 0.02, 0.5  # mm: a misalignment, not a match and not a design choice
 _ROW_REACH = 20.0  # mm: texts further apart vertically are not compared
 _BIG_RECT = 0.15  # fraction of the page width
+_PANEL_MIN_H = 15.0  # mm: a big rect shorter than this is a label pill, not a panel
 _MAX_IDS = 5  # ids per finding; the full lists are in the dict
 
 Matrix = tuple[float, float, float, float, float, float]
@@ -355,7 +356,7 @@ class _Collector:
             h = _first_number(el.get("height")) * sy * self.mm_uu
             if w > _BIG_RECT * self.page_mm[0]:
                 self.rects.append({"id": el.get("id") or "", "w": w, "h": h})
-                if width:
+                if width and h >= _PANEL_MIN_H:
                     self.panels.append((el.get("id") or "", width))
 
     def text(self, el: Any, m: Matrix, inh: dict[str, Any]) -> None:
@@ -496,9 +497,10 @@ def _checks(result: dict[str, Any], col: _Collector, rules: dict[str, Any]) -> l
         add("P03", True, "no near-duplicate colours")
 
     texts = col.texts
-    families = Counter(t["family"] for t in texts)
+    spelling = {t["family"].casefold(): t["family"] for t in reversed(texts)}  # font names ignore case
+    families = Counter(spelling[t["family"].casefold()] for t in texts)
     wanted = rules["family"]
-    stray = [t["id"] for t in texts if t["family"] != wanted]
+    stray = [t["id"] for t in texts if t["family"].casefold() != wanted.casefold()]
     listing = ", ".join(f"{f} ({n})" for f, n in families.most_common())
     if stray:
         add("P04", False, f"{len(families)} fonts: {listing} — ids {_ids(stray)}")

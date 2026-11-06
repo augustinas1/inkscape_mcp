@@ -114,6 +114,16 @@ def test_panel_outlines_at_least_one_point():
     assert check(measure(svg(body.format(w=1.4), head)), "P07")["ok"]
     found = check(measure(svg(body.format(w=0.5), head)), "P07")
     assert not found["ok"] and not found.get("warn") and "panel 0.5" in found["text"]
+    pill = body.replace('height="80"', 'height="14"')  # about 5 mm tall: a label pill, not a panel
+    assert not [c for c in measure(svg(pill.format(w=0.5), head))["checks"] if "panel" in c["text"]]
+
+
+def test_font_names_ignore_case():
+    body = (
+        '<text x="1" y="5" style="font-family:Calibri">a</text><text x="1" y="9" style="font-family:calibri">b</text>'
+    )
+    found = check(measure(svg(body)), "P04")
+    assert found["ok"] and "Calibri only (2)" in found["text"]
 
 
 def test_font_and_size_rules():
