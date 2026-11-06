@@ -101,6 +101,10 @@ one subtree, and anything over 40 KB comes back as a file path, not inline.
 - `selection` — what the user selected: ids, a short outline of each and one render (`png`).
   When the server launched Inkscape it reads Inkscape's `select-list` output: no undo entry.
   The prompt hook then also lists the selection on every message ("Selected in Inkscape now").
+- `measure` — exact sizes at print size (type in pt by family/weight/colour, colours with
+  near-duplicates and hue families, stroke widths, alignment near-misses of 0.02-0.5 mm) and
+  checks P02/P03/P04/P07 of the style rules. `target` limits it to a subtree; payload
+  `{"path": "/abs/file.svg"}` measures a file without Inkscape; `{"rules": {...}}` overrides rules.
 - `edit_xml` / `transplant` with `"render": true` return `render`: before|after, side by side,
   framed on the ids the edit names — no separate rasterize and crop.
 - `save` — writes the active document to its file even with several windows open (Inkscape

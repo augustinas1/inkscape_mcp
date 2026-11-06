@@ -18,6 +18,7 @@ from typing import Any
 # Dependencies first: tools.live imports from the modules above it.
 RELOADABLE = (
     "inkscape_mcp.figure_outline",
+    "inkscape_mcp.figure_measure",
     "inkscape_mcp.svg_cleanup",
     "inkscape_mcp.transplant",
     "inkscape_mcp.selection_probe",

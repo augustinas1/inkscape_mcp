@@ -211,6 +211,46 @@ async def op_selection(bus: Any, operation: str, payload: str, config: Any, star
     return live._result(operation, True, message, data=result, start=start)
 
 
+# ---- measure -------------------------------------------------------------------------------
+
+
+def measure_path(payload: str) -> str:
+    """The file a measure payload names, "" when it measures the live document."""
+    try:
+        args = json.loads(payload) if payload else {}
+    except ValueError:
+        return ""
+    return str(args.get("path", "")) if isinstance(args, dict) else ""
+
+
+async def op_measure(bus: Any, operation: str, target: str, payload: str, start: float) -> dict[str, Any]:
+    """Print-size measurements and style-rule checks (P02, P03, P04, P07) of the figure.
+
+    target: a subtree id. payload: {"path": "/abs/file.svg"} measures that file, no Inkscape needed;
+    {"rules": {...}} overrides the rules; {"json": true} adds the full measurements to data.
+    """
+    from ..figure_measure import measure, report
+
+    try:
+        args = json.loads(payload) if payload else {}
+        path = measure_path(payload)
+        if path:
+            if not os.path.isabs(path) or not os.path.isfile(path):
+                return live._result(operation, False, f"no such file: {path}", error="bad path", start=start)
+            data = Path(path).read_bytes()
+        else:
+            _, data = await snapshot()
+        result = measure(data, target, args.get("rules"))
+    except KeyError as exc:
+        return live._result(operation, False, str(exc.args[0]), error="unknown id", start=start)
+    except (ValueError, etree.XMLSyntaxError) as exc:
+        return live._result(operation, False, f"cannot measure: {exc}", error=str(exc), start=start)
+    out: dict[str, Any] = {"checks": result["checks"]}
+    if args.get("json"):
+        out["measurements"] = result
+    return live._result(operation, True, report(result), data=out, start=start)
+
+
 # ---- save ----------------------------------------------------------------------------------
 
 

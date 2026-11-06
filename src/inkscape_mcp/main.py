@@ -716,7 +716,7 @@ class InkscapeMCPServer:
             delete_selected, apply_action, list_actions, open_file, save_snapshot, changes, outline,
             edit_xml, path_edit, inspect_selection/layers/defs/view/pages/element,
             execute_inkex, rasterize, preview, component, transplant, selection, save,
-            label, organize, parked.
+            label, organize, parked, measure.
             """
             from .tools.hot_reload import live_entry
 

@@ -137,6 +137,10 @@ operations. Highlights:
 - **Selection:** `selection` — ids, an outline of each and one render, in one call; read with
   Inkscape's `select-list`, so no undo entry when the server launched Inkscape (else falls back
   to the inspect extension). Also `get_selection`, `set_selection`, `delete_selected`.
+- **Measuring:** `measure` — print-size type sizes, colours, stroke widths and near-miss
+  alignments, with checks for the style rules (P02 alignment, P03 colour, P04 type, P07 strokes).
+  `target` = subtree id; payload `{"path": "/abs/file.svg"}` measures a file without Inkscape,
+  `{"rules": {...}}` overrides the defaults, `{"json": true}` adds the full numbers to `data`.
 - **Saving:** `save` — writes the active document to its file (known for files opened with
   `open_file`, else payload `path`), with a backup; works with several windows open.
 - **Tidying:** `label` (plain-word labels for unlabelled elements, arrows named by what they

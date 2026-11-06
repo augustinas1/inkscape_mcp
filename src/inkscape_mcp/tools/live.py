@@ -369,7 +369,7 @@ async def _export_document_async(bus: InkscapeDBus, scratch: Path) -> None:
 _SNAPSHOT_TTL_S = 3.0
 _SNAPSHOT_CACHE: dict[str, Any] = {}
 _SNAPSHOT_REUSE: contextvars.ContextVar[bool] = contextvars.ContextVar("snapshot_reuse", default=False)
-_READ_ONLY_OPS = frozenset({"outline", "get_document_xml", "preview", "rasterize", "selection", "changes"})
+_READ_ONLY_OPS = frozenset({"outline", "get_document_xml", "preview", "rasterize", "selection", "changes", "measure"})
 # Operations that leave the drawing as it is (the selection, the view or a file aside), and
 # those whose every change goes through edit_xml (so a check-only run changes nothing).
 _NO_DOC_CHANGE = _READ_ONLY_OPS | {
@@ -2325,6 +2325,13 @@ async def _inkscape_live(
         except Exception as exc:
             return _result(operation, False, f"ping failed: {exc}", error=str(exc), start=start)
 
+    # measuring a file needs no Inkscape
+    if operation == "measure":
+        from . import live_figure
+
+        if live_figure.measure_path(payload):
+            return await live_figure.op_measure(bus, operation, target, payload, start)
+
     # Auto-manage (Windows/macOS): if the bridge isn't live yet, start the bus + Inkscape.
     if (bus_manager.is_windows() or mac_bus_manager.is_macos()) and not bus.is_available():
         # macOS: when the triggering op is open_file, launch straight onto that file.
@@ -2435,6 +2442,10 @@ async def _inkscape_live(
             return await _op_outline(bus, operation, target, start)
         if operation == "edit_xml":
             return await _op_edit_xml(bus, operation, target, payload, window_id, start)
+        if operation == "measure":
+            from . import live_figure
+
+            return await live_figure.op_measure(bus, operation, target, payload, start)
         if operation in ("selection", "save", "label", "organize", "parked"):
             from . import live_figure
 
